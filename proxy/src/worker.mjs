@@ -34,6 +34,13 @@ const corsFor = (origin) => (extra = {}) => ({
 const json = (cors, obj, status = 200, extra = {}) =>
   new Response(JSON.stringify(obj), { status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "no-store", ...extra }) });
 
+async function tokenOk(given, expected) { // constant-time compare via SHA-256 digests
+  const d = async (x) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(x))));
+  const [a, b] = await Promise.all([d(given), d(expected)]);
+  let diff = 0; for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0 && !!given;
+}
+
 /* ------------------------------------------------------------------ front Worker */
 export default {
   async fetch(request, env) {
@@ -55,12 +62,21 @@ export default {
     const hub = env.HUB ? env.HUB.get(env.HUB.idFromName("main")) : null;
 
     if (request.method === "GET" && p === "/api/ships") {
-      if (!hub || !env.AISSTREAM_API_KEY) return json(cors, { error: "AIS not configured" }, 503);
+      if (!hub || !(env.AISSTREAM_API_KEY || env.INGEST_TOKEN)) return json(cors, { error: "AIS not configured" }, 503);
       const r = await hub.fetch("https://hub/ships");
       return json(cors, await r.json(), r.status, { "Cache-Control": "public, max-age=20" });
     }
+    if (request.method === "POST" && p === "/api/ships/ingest") {
+      // Optional relay: a collector running on a non-datacenter IP (scripts/ais-collector.mjs) posts aisstream messages here,
+      // because aisstream.io drops connections coming from datacenter / Cloudflare egress IPs. Bearer token = Worker secret INGEST_TOKEN.
+      if (!hub || !env.INGEST_TOKEN) return json(cors, { error: "ingest not configured" }, 503);
+      const given = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+      if (!(await tokenOk(given, env.INGEST_TOKEN))) return json(cors, { error: "unauthorized" }, 401);
+      const r = await hub.fetch("https://hub/ingest", { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
+      return json(cors, await r.json(), r.status);
+    }
     if (request.method === "GET" && p === "/api/push/config") {
-      return json(cors, { enabled: !!(env.SUBS && hub && env.VAPID_PRIVATE_KEY && env.VAPID_PUBLIC_KEY), publicKey: env.VAPID_PUBLIC_KEY || null, aisEnabled: !!env.AISSTREAM_API_KEY }, 200, { "Cache-Control": "public, max-age=300" });
+      return json(cors, { enabled: !!(env.SUBS && hub && env.VAPID_PRIVATE_KEY && env.VAPID_PUBLIC_KEY), publicKey: env.VAPID_PUBLIC_KEY || null, aisEnabled: !!(env.AISSTREAM_API_KEY || env.INGEST_TOKEN) }, 200, { "Cache-Control": "public, max-age=300" });
     }
     if (request.method === "POST" && /^\/api\/push\/(subscribe|unsubscribe|test)$/.test(p)) {
       if (origin && !originOk(origin)) return json(cors, { error: "origin not allowed" }, 403);
@@ -85,7 +101,7 @@ export class Hub {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
     ctx.blockConcurrencyWhile(async () => {
-      const s = await ctx.storage.get(["ships", "lastCollect", "lastError"]);
+      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag"]); this.diag = s.get("diag") || null;
       this.ships = s.get("ships") || {}; this.lastCollect = s.get("lastCollect") || 0; this.lastError = s.get("lastError") || "";
       this.everCollected = this.lastCollect > 0;
     });
@@ -95,6 +111,7 @@ export class Hub {
     const path = new URL(request.url).pathname;
     try {
       if (path === "/ships") return this.shipsResponse();
+      if (path === "/ingest") return this.ingest(request);
       if (path === "/cron") return new Response(JSON.stringify(await this.runAlerts()), { headers: { "Content-Type": "application/json" } });
       let body = {}; try { body = await request.json(); } catch { /* none */ }
       if (path === "/subscribe") return this.subscribe(body);
@@ -106,19 +123,30 @@ export class Hub {
 
   async alarm() { await this.collect(); }
 
+  async ingest(request) {
+    let body; try { body = await request.json(); } catch { return new Response(JSON.stringify({ error: "bad json" }), { status: 400 }); }
+    const msgs = Array.isArray(body && body.messages) ? body.messages.slice(0, 5000) : [];
+    const now = Date.now(); let n = 0;
+    for (const m of msgs) if (applyAis(this.ships, m, now)) n++;
+    for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
+    this.lastCollect = now; this.lastError = ""; this.everCollected = true; this.diag = { source: "ingest", msgs: msgs.length, applied: n, at: now };
+    await this.ctx.storage.put({ ships: this.ships, lastCollect: this.lastCollect, lastError: "", diag: this.diag });
+    return new Response(JSON.stringify({ ok: true, received: msgs.length, applied: n, tracked: Object.keys(this.ships).length }), { headers: { "Content-Type": "application/json" } });
+  }
+
   /* ---- AIS ---- */
   async shipsResponse() {
     const now = Date.now(), age = now - this.lastCollect;
     if (!this.collecting && now - this.lastAttempt > STALE_MS && age > STALE_MS && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 50);
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
-    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, count: list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, count: list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
   }
 
   async collect(ms = COLLECT_MS) {
     if (this.collecting) return;
     this.collecting = true; this.lastAttempt = Date.now();
-    let error = "";
+    let error = ""; const diag = { msgs: 0, confirmed: false, close: "", ms: 0 }, t0 = Date.now();
     try {
       const key = this.env.AISSTREAM_API_KEY;
       if (!key) throw new Error("AISSTREAM_API_KEY missing");
@@ -133,18 +161,21 @@ export class Hub {
           let text; try { text = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data); } catch { return; }
           let msg; try { msg = JSON.parse(text); } catch { return; }
           if (msg.error) { error = String(msg.error).slice(0, 120); clearTimeout(timer); done(); return; }
+          diag.msgs++; if (msg.MessageType === "SubscriptionConfirmation") diag.confirmed = true;
           applyAis(this.ships, msg, Date.now());
         });
-        ws.addEventListener("close", () => { clearTimeout(timer); resolve(); });
+        ws.addEventListener("close", (ev) => { diag.close = ev.code + (ev.reason ? " " + String(ev.reason).slice(0, 60) : ""); clearTimeout(timer); resolve(); });
         ws.addEventListener("error", () => { error = error || "websocket error"; clearTimeout(timer); resolve(); });
         ws.send(JSON.stringify({ APIKey: key, BoundingBoxes: [[[AIS_BBOX.lamin, AIS_BBOX.lomin], [AIS_BBOX.lamax, AIS_BBOX.lomax]]], FilterMessageTypes: AIS_TYPES }));
       });
     } catch (e) { error = String((e && e.message) || e).slice(0, 160); }
     const now = Date.now();
     for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
+    diag.ms = now - t0; this.diag = diag;
+    if (!error && !diag.confirmed) error = "aisstream dropped the connection before confirming the subscription (" + (diag.close || "no close code") + ")";
     this.lastError = error; this.everCollected = true;
     if (!error) this.lastCollect = now; else this.lastCollect = this.lastCollect || 0;
-    await this.ctx.storage.put({ ships: this.ships, lastCollect: this.lastCollect, lastError: this.lastError });
+    await this.ctx.storage.put({ ships: this.ships, lastCollect: this.lastCollect, lastError: this.lastError, diag: this.diag });
     this.collecting = false;
   }
 
@@ -234,12 +265,13 @@ export class Hub {
   }
 
   async checkCcg(list, push) {
-    if (!this.env.AISSTREAM_API_KEY) return "no AIS key";
-    if (!this.collecting && Date.now() - this.lastAttempt > STALE_MS) await this.collect();
+    if (!this.env.AISSTREAM_API_KEY && !this.env.INGEST_TOKEN) return "no AIS key";
+    if (this.env.AISSTREAM_API_KEY && !this.collecting && Date.now() - this.lastCollect > STALE_MS && Date.now() - this.lastAttempt > STALE_MS) await this.collect();
     const now = Date.now(), seen = (await this.ctx.storage.get("ccgSeen")) || {};
     let n = 0;
     for (const s of Object.values(this.ships)) {
       if (!s.t || now - s.t > 15 * 60000 || !isCcg(s)) continue;
+      if (s.lat < 20 || s.lat > 27.5 || s.lon < 116 || s.lon > 124.5) continue; // alert only near Taiwan (incl. Kinmen/Matsu/Pratas); the AIS box is wider
       if (seen[s.mmsi] && now - seen[s.mmsi] < 12 * 3600000) continue;
       await push(list, { title: "⚓ 中國海警船出現在台灣周邊 AIS", body: (s.name || "MMSI " + s.mmsi) + " · MMSI " + s.mmsi + " · " + s.lat.toFixed(2) + "N " + s.lon.toFixed(2) + "E" + (s.sog != null ? " · " + s.sog.toFixed(1) + " kn" : "") + "（依 AIS 名稱／型態推測，非官方確認）", tag: "ccg-" + s.mmsi, url: SITE + "?ship=" + s.mmsi }, { urgency: "high", ttl: 3600 });
       seen[s.mmsi] = now; n++;

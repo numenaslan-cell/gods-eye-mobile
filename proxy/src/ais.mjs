@@ -1,5 +1,7 @@
 /* AIS helpers: merge aisstream.io messages into a per-MMSI map; China Coast Guard heuristic. Pure functions. */
-export const AIS_BBOX = { lamin: 20.0, lomin: 118.0, lamax: 27.5, lomax: 124.5 };
+// Taiwan and neighbouring waters. aisstream's terrestrial coverage right around Taiwan is almost empty (measured: 1 vessel / 2 min inside 20–27.5N 118–124.5E),
+// while Hong Kong / S. China and Japan are well covered, so the box reaches out to include them.
+export const AIS_BBOX = { lamin: 18.0, lomin: 108.0, lamax: 34.0, lomax: 132.0 };
 export const AIS_TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
 
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);

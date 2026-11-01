@@ -87,6 +87,11 @@
   }
   var ShipIcon = function (p) { return svgIcon([h("path", { key: 1, d: "M3 17l2 3h14l2-3-9-3-9 3z" }), h("path", { key: 2, d: "M12 14V4l5 6" }), h("path", { key: 3, d: "M12 4L7 10" })], p.size); };
 
+  var QuakeIcon = function (p) { return svgIcon([h("path", { key: 1, d: "M2 12h4l3-8 4 16 3-8h6" })], p.size); };
+  function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
+  function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
+  function quakeAgo(t) { var m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? m + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; }
+
   /* ---- ship marker colours by class (distinct from the white aircraft cones) ---- */
   var SHIP_COLORS = { cargo: 0x2ee6ff, tanker: 0xff9f1c, pax: 0xd18bff, fish: 0x6dff8a, other: 0x9aa7b0, ccg: 0xff3b30 };
   var SHIP_CSS = { cargo: "#2ee6ff", tanker: "#ff9f1c", pax: "#d18bff", fish: "#6dff8a", other: "#9aa7b0", ccg: "#ff3b30" };
@@ -151,10 +156,11 @@
     var _tick = React.useState(0), setTick = _tick[1];
     var _sel = React.useState(null), selId = _sel[0], setSelId = _sel[1];
     var _follow = React.useState(false), follow = _follow[0], setFollow = _follow[1];
-    var _layers = React.useState({ sats: true, flights: true, ships: true }), layers = _layers[0], setLayers = _layers[1];
+    var _layers = React.useState({ sats: true, flights: true, ships: true, quakes: true }), layers = _layers[0], setLayers = _layers[1];
     var _tab = React.useState(function () { return window.innerHeight >= 760 ? "hud" : null; }) /* short screens start collapsed */, tab = _tab[0], setTab = _tab[1];
     var _ss = React.useState(null), selShipId = _ss[0], setSelShipId = _ss[1];
     var _sf = React.useState(false), sFollow = _sf[0], setSFollow = _sf[1];
+    var _sq = React.useState(null), selQuakeId = _sq[0], setSelQuakeId = _sq[1];
     var _inv = React.useState(0), inView = _inv[0], setInView = _inv[1];
     var _obs = React.useState(loadObserver), observer = _obs[0], setObserver = _obs[1];
     var _ps = React.useState({ status: "loading", list: [], error: "", ageMin: null }), passes = _ps[0], setPasses = _ps[1];
@@ -179,6 +185,7 @@
     var layersRef = React.useRef(layers); layersRef.current = layers;
     var focusRef = React.useRef(null);
     var selShipRef = React.useRef(selShipId); selShipRef.current = selShipId;
+    var selQuakeRef = React.useRef(selQuakeId); selQuakeRef.current = selQuakeId;
     var observerRef = React.useRef(observer); observerRef.current = observer;
     var passMarkRef = React.useRef(null);
     var inViewRef = React.useRef(0);
@@ -198,7 +205,7 @@
       return function () { unsub(); clearInterval(iv); clearTimeout(pending); };
     }, []);
 
-    var flights = Data.state.flights, sats = Data.state.sats, ships = Data.state.ships;
+    var flights = Data.state.flights, sats = Data.state.sats, ships = Data.state.ships, quakes = Data.state.quakes;
     var list = flights.list;
     var selIdx = Math.max(0, list.findIndex(function (x) { return x.id === selId; }));
     var selected = list.length ? list[selIdx] : null;
@@ -231,6 +238,11 @@
       setSelShipId(id); setTab("ships"); setFollow(false);
       if (doFollow) { setSFollow(true); focusRef.current = { kind: "ship", id: id }; }
     }
+    function selectQuake(id, fly) {
+      setSelQuakeId(id); setTab("quakes"); setFollow(false); setSFollow(false);
+      var q = quakes.list.find(function (x) { return x.id === id; });
+      if (q && fly) { setPlace(""); flyTo(q.lat, q.lon, isNarrow() ? 1.45 : 1.3, true); }
+    }
     function cycleShip(dir, onlyCcg) {
       var pool = onlyCcg ? ccgList : sList; if (!pool.length) return;
       var i = pool.findIndex(function (x) { return x.id === selShipId; });
@@ -243,7 +255,7 @@
       if (sFollow) { setSFollow(false); focusRef.current = null; }
       else { setSFollow(true); setFollow(false); focusRef.current = { kind: "ship", id: selShip.id }; }
     }
-    actionsRef.current = { selectFlight: selectFlight, selectShip: selectShip };
+    actionsRef.current = { selectFlight: selectFlight, selectShip: selectShip, selectQuake: selectQuake };
     function cycle(dir) {
       if (!list.length) return;
       var n = (selIdx + dir + list.length) % list.length;
@@ -532,6 +544,22 @@
       var shipMats = {}; Object.keys(SHIP_COLORS).forEach(function (k) { shipMats[k] = new T.MeshBasicMaterial({ color: SHIP_COLORS[k], transparent: true, opacity: 0.95 }); });
       var shipSelMat = new T.MeshBasicMaterial({ color: 0xffffff });
       var shipMeshes = {}; // id -> {mesh, sh}
+      // earthquakes: pulsing rings sized by magnitude + a solid core (rings/discs built by hand: the vendor bundle has no Ring/Circle geometry)
+      var quakeGroup = new T.Group(); scene.add(quakeGroup);
+      function discGeo(r0, r1, seg) {
+        var g = new T.BufferGeometry(), a = [], i;
+        function tri(p, q, w) { [p, q, w].forEach(function (v) { a.push(v[0], v[1], v[2]); }); [w, q, p].forEach(function (v) { a.push(v[0], v[1], v[2]); }); }
+        for (i = 0; i < seg; i++) {
+          var t0 = i / seg * 2 * Math.PI, t1 = (i + 1) / seg * 2 * Math.PI;
+          var A = [Math.cos(t0) * r1, Math.sin(t0) * r1, 0], B = [Math.cos(t1) * r1, Math.sin(t1) * r1, 0];
+          if (r0 > 0) { var C = [Math.cos(t0) * r0, Math.sin(t0) * r0, 0], D = [Math.cos(t1) * r0, Math.sin(t1) * r0, 0]; tri(A, B, C); tri(B, D, C); }
+          else tri(A, B, [0, 0, 0]);
+        }
+        g.setAttribute("position", new T.Float32BufferAttribute(a, 3)); return g;
+      }
+      var qRingGeo = discGeo(0.8, 1, 40), qDotGeo = discGeo(0, 0.3, 20), qRingGeo2 = discGeo(0.9, 1, 40);
+      var quakeMeshes = {}; // id -> {ring, ring2, dot, q}
+      var lastQuakeRev = -1;
       var obsPts = new T.Points(new T.BufferGeometry(), new T.PointsMaterial({ color: 0xff2fd0, size: 9, sizeAttenuation: false })); obsPts.frustumCulled = false; scene.add(obsPts);
       var passPts = new T.Points(new T.BufferGeometry(), new T.PointsMaterial({ color: 0xff2fd0, size: 12, sizeAttenuation: false })); passPts.frustumCulled = false; scene.add(passPts);
       var lastObsKey = "", lastShipRev = -1, lastCountAt = 0;
@@ -596,6 +624,27 @@
         Object.keys(shipMeshes).forEach(function (id) { if (!seen[id]) { shipGroup.remove(shipMeshes[id].mesh); delete shipMeshes[id]; } });
       }
 
+      function syncQuakes() {
+        var st = Data.state.quakes, seen = {};
+        st.list.forEach(function (q, i) {
+          seen[q.id] = 1;
+          var e = quakeMeshes[q.id];
+          if (!e) {
+            var col = quakeHex(q.mag);
+            function mat(o) { return new T.MeshBasicMaterial({ color: col, transparent: true, opacity: o, depthWrite: false }); }
+            var ring = new T.Mesh(qRingGeo, mat(0.9)), ring2 = new T.Mesh(qRingGeo2, mat(0.5)), dot = new T.Mesh(qDotGeo, mat(0.95));
+            var v = latLonToVec(q.lat, q.lon, 1.004), out = v.clone().multiplyScalar(2);
+            [ring, ring2, dot].forEach(function (m) { m.position.copy(v); m.lookAt(out); quakeGroup.add(m); });
+            e = quakeMeshes[q.id] = { ring: ring, ring2: ring2, dot: dot, q: q, seed: i * 0.37, col: col };
+          }
+          e.q = q;
+        });
+        Object.keys(quakeMeshes).forEach(function (id) {
+          if (seen[id]) return; var e = quakeMeshes[id];
+          [e.ring, e.ring2, e.dot].forEach(function (m) { quakeGroup.remove(m); m.material.dispose(); }); delete quakeMeshes[id];
+        });
+      }
+
       function syncSats() {
         var st = Data.state.sats, pos = st.pos, n = pos.length / 3;
         var all = new Float32Array(n * 3), tw = [], overSet = {};
@@ -640,6 +689,7 @@
         if (fst.rev !== lastFlightRev) { lastFlightRev = fst.rev; syncFlights(); }
         if (sst.rev !== lastSatRev) { lastSatRev = sst.rev; syncSats(); }
         if (Data.state.ships.rev !== lastShipRev) { lastShipRev = Data.state.ships.rev; syncShips(); }
+        if (Data.state.quakes.rev !== lastQuakeRev) { lastQuakeRev = Data.state.quakes.rev; syncQuakes(); }
         var oo = observerRef.current, oKey = oo.lat + "," + oo.lon;
         if (oKey !== lastObsKey) { lastObsKey = oKey; var ov = latLonToVec(oo.lat, oo.lon, 1.004); obsPts.geometry.dispose(); obsPts.geometry = new T.BufferGeometry(); obsPts.geometry.setAttribute("position", new T.Float32BufferAttribute([ov.x, ov.y, ov.z], 3)); }
         var pm = passMarkRef.current;
@@ -658,7 +708,7 @@
         var tint = m === "NVG" ? 0x4dff6a : m === "THERM" ? 0xffa040 : 0x9fe8ff;
         satMat.color.setHex(tint);
 
-        satGroup.visible = lay.sats; flightGroup.visible = lay.flights; trailLine.visible = lay.flights; shipGroup.visible = lay.ships;
+        satGroup.visible = lay.sats; flightGroup.visible = lay.flights; trailLine.visible = lay.flights; shipGroup.visible = lay.ships; quakeGroup.visible = lay.quakes;
 
         // flights: dead-reckon, orient, scale
         var camLen = camera.position.length();
@@ -680,6 +730,21 @@
           var s = isSel ? k * 2.2 : k;
           e.mesh.scale.set(s, s, s);
           if (isSel) { selFl = fl; selPos = { lat: p.lat, lon: p.lon, v: v }; }
+        }
+        // quakes: size by magnitude, two staggered expanding pulses; recent events (<24 h) pulse faster and brighter
+        if (lay.quakes) {
+          var kq = Math.max(0.3, Math.min(1.0, 0.25 + (camLen - 1) * 0.5)), selQ = selQuakeRef.current;
+          for (var qid in quakeMeshes) {
+            var qe = quakeMeshes[qid], qq = qe.q, base = (0.006 + 0.0055 * Math.max(0, qq.mag - 3)) * kq, isQ = qid === selQ;
+            var fresh = nowMs - qq.t < 86400000, per = fresh ? 1800 : 3200;
+            var ph1 = ((nowMs / per) + qe.seed) % 1, ph2 = (ph1 + 0.5) % 1;
+            var s1 = base * (isQ ? 1.5 : 1) * (0.7 + ph1 * 1.5), s2 = base * (isQ ? 1.5 : 1) * (0.7 + ph2 * 1.5), sd = base * (isQ ? 1.5 : 1) * (fresh ? 0.9 : 0.7);
+            qe.ring.scale.set(s1, s1, s1); qe.ring2.scale.set(s2, s2, s2); qe.dot.scale.set(sd, sd, sd);
+            var dim = fresh ? 1 : 0.55;
+            qe.ring.material.opacity = (1 - ph1) * 0.95 * dim; qe.ring2.material.opacity = (1 - ph2) * 0.95 * dim; qe.dot.material.opacity = 0.95 * dim;
+            var want = isQ ? 0xffffff : qe.col;
+            if (qe.dot.material.color.getHex() !== want) { qe.ring.material.color.setHex(want); qe.ring2.material.color.setHex(want); qe.dot.material.color.setHex(want); }
+          }
         }
         // ships: dead-reckon, orient, scale; remember the on-screen ones
         var selSh = null, selShPos = null, camN = camera.position.clone().normalize(), onScreen = 0, doCount = nowMs - lastCountAt > 500;
@@ -770,7 +835,8 @@
         }
         if (lay2.flights) for (var fid in meshes) { var pf = deadReckon(meshes[fid].fl, nowMs2); consider("flight", fid, pf.lat, pf.lon, 1.012); }
         if (lay2.ships) for (var sid2 in shipMeshes) { var ps = deadReckon(shipMeshes[sid2].sh, nowMs2); consider("ship", sid2, ps.lat, ps.lon, 1.008); }
-        if (best) { if (best.kind === "ship") actionsRef.current.selectShip(best.id, false); else actionsRef.current.selectFlight(best.id, false); }
+        if (lay2.quakes) for (var qid2 in quakeMeshes) { var qm = quakeMeshes[qid2].q; consider("quake", qid2, qm.lat, qm.lon, 1.004); }
+        if (best) { if (best.kind === "quake") actionsRef.current.selectQuake(best.id, false); else if (best.kind === "ship") actionsRef.current.selectShip(best.id, false); else actionsRef.current.selectFlight(best.id, false); }
       }
       canvas.addEventListener("pointerdown", onDown); canvas.addEventListener("pointerup", onUp);
 
@@ -824,7 +890,7 @@
       if (ships.status === "demo") bits.push(h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — no live AIS (" + (ships.error || "?") + "). Demo ships follow real shipping lanes; retrying…"));
       if (ships.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, ships.note || "Contacting AIS relay…"));
       bits.push(h("div", { key: "cnt", className: "ge-iss" },
-        h("div", null, h("b", null, fmtN(inView) + " IN VIEW"), h("small", null, fmtN(ships.count) + " TRACKED AROUND TAIWAN" + (ships.note ? " · " + ships.note : ""))),
+        h("div", null, h("b", null, fmtN(inView) + " IN VIEW"), h("small", null, fmtN(ships.count) + " TRACKED IN REGION" + (ships.note ? " · " + ships.note : ""))),
         ccgList.length ? h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: function () { cycleShip(1, true); } }, "⚠ CCG " + ccgList.length) : null));
       if (selShip) {
         bits.push(h("div", { className: "ge-pick", key: "pick" },
@@ -915,6 +981,31 @@
       return bits;
     }
 
+    function quakesBody() {
+      var bits = [], selQ = selQuakeId ? quakes.list.find(function (x) { return x.id === selQuakeId; }) : null;
+      var day = quakes.list.filter(function (x) { return Date.now() - x.t < 86400000; }).length;
+      var big = quakes.list.reduce(function (m, x) { return x.mag > m ? x.mag : m; }, 0);
+      if (quakes.status === "demo") bits.push(h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — USGS unreachable (" + (quakes.error || "?") + "). Retrying…"));
+      if (quakes.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, "Contacting USGS…"));
+      bits.push(h("div", { key: "cnt", className: "ge-iss" },
+        h("div", null, h("b", null, fmtN(quakes.count) + " QUAKES · 30 DAYS"), h("small", null, "M3.0+ · " + fmtN(day) + " IN LAST 24 H" + (big ? " · MAX M" + big.toFixed(1) : "")))));
+      if (selQ) bits.push(h("div", { key: "sel", className: "ge-quake-sel" },
+        h("b", { style: { color: quakeCss(selQ.mag) } }, "M" + selQ.mag.toFixed(1) + " · " + selQ.place),
+        h("small", null, new Date(selQ.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " (local) · " + quakeAgo(selQ.t) + " · depth " + (selQ.depthKm != null ? Math.round(selQ.depthKm) + " km" : "--") + " · " + fmtLL(selQ.lat, selQ.lon)),
+        selQ.url && !selQ.demo ? h("a", { href: selQ.url, target: "_blank", rel: "noopener noreferrer" }, "USGS EVENT PAGE ↗") : null));
+      if (quakes.list.length) bits.push(h("ul", { key: "ql", className: "ge-list ge-passes ge-quakes" }, quakes.list.slice(0, 40).map(function (q) {
+        var on = selQuakeId === q.id;
+        return h("li", { key: q.id }, h("button", { type: "button", className: cx("ge-li", "ge-pass", on && "is-on"), "aria-pressed": on, onClick: function () { if (on) setSelQuakeId(null); else selectQuake(q.id, true); } },
+          h("em", { className: "ge-mag", style: { background: quakeCss(q.mag) } }, "M" + q.mag.toFixed(1)),
+          h("span", { className: "ge-pass-main" },
+            h("b", null, q.place),
+            h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --")))));
+      })));
+      else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ earthquakes recorded by USGS around Taiwan in the last 30 days."));
+      bits.push(h("p", { key: "src", className: "ge-src" }, "USGS Earthquake Catalog (FDSN) · 20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
+      return bits;
+    }
+
     function alertsBody() {
       var bits = [], pi = pushInfo, srv = pi && pi.server, enabled = srv && srv.enabled;
       var sub = !!(pi && pi.subscribed);
@@ -939,13 +1030,14 @@
     var TABS = [
       { id: "hud", label: "FLIGHTS", sum: fmtN(flights.count), body: flightsBody },
       { id: "ships", label: "SHIPS", sum: fmtN(ships.count), body: shipsBody },
+      { id: "quakes", label: "QUAKES", sum: fmtN(quakes.count), body: quakesBody },
       { id: "sats", label: "SATS", sum: String(over.length), body: satsBody },
       { id: "passes", label: "PASSES", sum: (function () { var n = passes.list.find(function (p) { return p.end > Date.now(); }); return n ? hm(n.start) : "—"; })(), body: passesBody },
       { id: "alerts", label: "ALERTS", sum: pushInfo && pushInfo.subscribed ? "ON" : "OFF", body: alertsBody },
     ];
     var curTab = TABS.find(function (t) { return t.id === tab; });
 
-    var demoAny = flights.status === "demo" || sats.status === "demo" || ships.status === "demo";
+    var demoAny = flights.status === "demo" || sats.status === "demo" || ships.status === "demo" || quakes.status === "demo";
 
     return h("div", { className: "ge-root", ref: rootRef },
       h("canvas", { className: "ge-canvas", ref: canvasRef, "aria-label": "3D globe" }),
@@ -981,6 +1073,7 @@
           h("div", { className: "ge-tools" },
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.sats && "is-on"), "aria-pressed": layers.sats, "aria-label": "Toggle satellites", title: "Satellites", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { sats: !l.sats }); }); } }, h(ICON.Satellite, { size: 18 })),
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.ships && "is-on"), "aria-pressed": layers.ships, "aria-label": "Toggle ships", title: "Ships", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { ships: !l.ships }); }); } }, h(ShipIcon, { size: 18 })),
+            h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.quakes && "is-on"), "aria-pressed": layers.quakes, "aria-label": "Toggle earthquakes", title: "Earthquakes", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { quakes: !l.quakes }); }); } }, h(QuakeIcon, { size: 18 })),
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.flights && "is-on"), "aria-pressed": layers.flights, "aria-label": "Toggle flights", title: "Flights", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { flights: !l.flights }); }); } }, h(ICON.Plane, { size: 18 })),
             h("button", { type: "button", className: "ge-btn ge-tool", "aria-label": "Zoom in", onClick: function () { zoom(1); } }, h(ICON.Plus, { size: 18 })),
             h("button", { type: "button", className: "ge-btn ge-tool", "aria-label": "Zoom out", onClick: function () { zoom(-1); } }, h(ICON.Minus, { size: 18 }))),

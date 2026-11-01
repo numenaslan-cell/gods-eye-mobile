@@ -36,6 +36,7 @@
   var state = {
     flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "OpenSky Network", nextTry: 0 },
     ships: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
+    quakes: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "USGS", nextTry: 0 },
     sats: {
       status: "loading", total: 0, names: [], pos: new Float32Array(0), over: [], iss: null,
       updated: 0, rev: 0, error: "", source: "CelesTrak", group: cfg.satGroup, tleAgeMin: null,
@@ -228,6 +229,49 @@
     });
   }
 
+  /* ---------------------------------------------------------------- earthquakes (USGS) */
+  var quakeTimer = 0, quakeFailures = 0;
+  var QK = { minLat: 20, maxLat: 27.5, minLon: 118, maxLon: 124.5, days: 30, minMag: 3 };
+  function mapQuake(f) {
+    var p = f.properties || {}, c = (f.geometry && f.geometry.coordinates) || [];
+    if (p.mag == null || c[0] == null || c[1] == null) return null;
+    return { id: f.id, mag: p.mag, depthKm: c[2], lat: c[1], lon: c[0], t: p.time, place: p.place || "Taiwan region", url: p.url || "", demo: !!f.demo };
+  }
+  function demoQuakes() {
+    var now = Date.now(), H = 3600000, d = [[23.85, 121.75, 5.3, 18, 0.7, "DEMO · 28 km SE of Hualien City"], [24.6, 122.1, 4.6, 33, 5, "DEMO · 40 km E of Yilan"], [22.9, 121.4, 4.1, 12, 11, "DEMO · 20 km N of Taitung"], [23.2, 120.6, 3.6, 8, 26, "DEMO · 12 km NE of Chiayi"], [24.1, 123.2, 4.4, 22, 50, "DEMO · offshore east of Taiwan"], [22.3, 121.0, 3.2, 40, 90, "DEMO · south of Taiwan"]];
+    return d.map(function (q, i) { return mapQuake({ id: "demo" + i, demo: true, properties: { mag: q[2], time: now - q[4] * H, place: q[5] }, geometry: { coordinates: [q[1], q[0], q[3]] } }); });
+  }
+  function setQuakes(status, list, error) {
+    var s = state.quakes;
+    s.status = status; s.list = list; s.count = list.length; s.updated = Date.now(); s.rev++; s.error = error || "";
+    emit("quakes");
+  }
+  function scheduleQuakes(ms) { clearTimeout(quakeTimer); state.quakes.nextTry = Date.now() + ms; quakeTimer = setTimeout(pollQuakes, ms); }
+  function quakesToDemo(msg) {
+    quakeFailures++;
+    setQuakes("demo", cfg.demoFallback ? demoQuakes() : [], msg);
+    scheduleQuakes(Math.min(60000 * Math.pow(2, quakeFailures - 1), 600000));
+  }
+  function pollQuakes() {
+    if (document.hidden) { scheduleQuakes(300000); return; }
+    var start = new Date(Date.now() - QK.days * 86400000).toISOString().slice(0, 19);
+    var url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=200&minmagnitude=" + QK.minMag +
+      "&minlatitude=" + QK.minLat + "&maxlatitude=" + QK.maxLat + "&minlongitude=" + QK.minLon + "&maxlongitude=" + QK.maxLon + "&starttime=" + start;
+    fetchTimeout(url, 15000, { cache: "no-store" }).then(function (res) {
+      if (!res.ok) throw new Error("USGS HTTP " + res.status);
+      return res.json();
+    }).then(function (j) {
+      quakeFailures = 0;
+      var list = (j.features || []).map(mapQuake).filter(Boolean).sort(function (a, b) { return b.t - a.t; });
+      setQuakes("live", list, "");
+      scheduleQuakes(300000);
+    }).catch(function (err) {
+      var msg = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err);
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) msg = "network / CORS blocked";
+      quakesToDemo(msg);
+    });
+  }
+
   /* --------------------------------------------------------------- satellites */
   var satrecs = [], satNames = [], satTimer = 0, demoOrbits = null;
   var TW = cfg.bbox;
@@ -384,12 +428,13 @@
   var started = false;
   function start() {
     if (started) return; started = true;
-    if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); setShips("demo", demoShips(), "demo mode (?demo=1)"); }
-    else { pollFlights(); pollShips(); }
+    if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); setShips("demo", demoShips(), "demo mode (?demo=1)"); setQuakes("demo", demoQuakes(), "demo mode (?demo=1)"); }
+    else { pollFlights(); pollShips(); pollQuakes(); }
     startSats();
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.flights.nextTry - 1000) pollFlights();
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.ships.nextTry - 1000) pollShips();
+      if (!document.hidden && !FORCE_DEMO && Date.now() >= state.quakes.nextTry - 1000) pollQuakes();
     });
   }
 

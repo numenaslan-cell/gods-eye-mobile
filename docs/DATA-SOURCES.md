@@ -16,13 +16,13 @@
 
 | 來源 Source | 結論 Verdict | 備註 Notes |
 |---|---|---|
-| **aisstream.io**（採用 / chosen） | ✅ 免費 WebSocket、需 API key（以 GitHub 登入後在 Account 頁產生）、支援 bounding box | 官方文件：**不允許瀏覽器直連**（要求由自己的伺服器代理）、key 只能放伺服器端；同時連線數上限 3 條；訂閱須在 3 秒內送出；**無 SLA**、不保證補送。**截至調查日未找到公開的 Terms of Service／商業使用／署名條款**；→ 作品集／展示用途風險低；若要做**商業產品**，請先向 aisstream 取得書面許可。台灣周邊的地面站涵蓋率未能在沒有 key 的情況下驗證。 |
+| **aisstream.io**（採用 / chosen） | ✅ 免費 WebSocket、需 API key（以 GitHub 登入後在 Account 頁產生）、支援 bounding box | 官方文件：**不允許瀏覽器直連**（要求由自己的伺服器代理）、key 只能放伺服器端；同時連線數上限 3 條；訂閱須在 3 秒內送出；**無 SLA**、不保證補送。**截至調查日未找到公開的 Terms of Service／商業使用／署名條款**；→ 作品集／展示用途風險低；若要做**商業產品**，請先向 aisstream 取得書面許可。**實測（2026-11-01）**：台灣周邊 20–27.5°N 118–124.5°E 的地面接收站涵蓋率幾乎是空的（2 分鐘只收到 1 艘），香港／華南與日本一帶則很完整，所以 App 的 AIS 範圍放寬為 18–34°N 108–132°E。**另外 aisstream 會中斷來自 Cloudflare／雲端機房 IP 的 WebSocket（連上後 1–2 秒關閉，close 1006）**，所以改由一個跑在一般網路 IP 上的收集器 `scripts/ais-collector.mjs` 轉送到 Worker 的 `/api/ships/ingest`（見 `proxy/DEPLOY.md`）。 |
 | AISHub | ⚠️ 免費，但採「資料交換」：必須自己架設 AIS 接收站並持續分享資料才能取得 API | 沒有接收站的人無法使用。 |
 | 交通部航港局「臺灣海域船舶即時資訊系統」`mpbais.motcmpb.gov.tw` | ⚠️ 網站前端使用的端點（未公開文件）；**不是**官方開放資料 API，也沒有公開授權條款 | 不採用：未公開、可能隨時變更，且不宜在作品集專案中依賴。航港局「政府資料開放平台」只有各商港進出港動態資料集，不是即時 AIS 船位。 |
 | Digitraffic（芬蘭）、BarentsWatch（挪威） | ❌ 僅涵蓋各自海域 | 不適用台灣。 |
 | MarineTraffic、VesselFinder、Datalastic 等 | ❌ 商業付費 API | 不符合「免費」限制。 |
 
-**架構 Architecture：** 瀏覽器 → `GET /api/ships`（自己的 Cloudflare Worker）→ Durable Object `Hub`（以 alarm 觸發、每次約 25 秒連到 `wss://stream.aisstream.io/v0/stream`，只訂閱台灣周邊 20–27.5°N、118–124.5°E 的位置／靜態訊息，彙整後存入 DO storage，保留 30 分鐘）。API key 是 Worker secret `AISSTREAM_API_KEY`，從不出現在前端。沒有 key、尚未部署或請求失敗時，前端自動顯示橘色 **DEMO DATA**（沿真實航道生成的示範船隻）。
+**架構 Architecture：** 瀏覽器 → `GET /api/ships`（自己的 Cloudflare Worker）→ Durable Object `Hub`（彙整後存入 DO storage、保留 30 分鐘）。資料來源：收集器 → `POST /api/ships/ingest`（Bearer `INGEST_TOKEN`）；Worker 自己直連 `wss://stream.aisstream.io/v0/stream` 只是備援（目前會被 aisstream 中斷）。API key 是 Worker secret `AISSTREAM_API_KEY`，從不出現在前端。沒有 key、尚未部署或請求失敗時，前端自動顯示橘色 **DEMO DATA**（沿真實航道生成的示範船隻）。
 
 * 中國海警（CCG）判斷是**啟發式**：AIS 船名含 `HAIJING`／`HAI JING`／`CHINA COAST GUARD`／`CCG nnnn`／`海警`，或「船型 55（執法）＋中國 MMSI 前綴 412/413/414」。AIS 沒有「海警」欄位，所以可能漏報或誤報；介面與推播內文都標示「非官方確認」。
 * 地震：USGS `4.5_day.geojson`（公開、無 key），範圍 20–27.5°N、118–124.5°E、M ≥ 4.5、6 小時內的新事件。

@@ -1,14 +1,26 @@
 # Deploying the Worker (AIS ships + Web Push alerts)
 
-**Status: nothing in this file has been run.** The code is committed but *not* deployed; the live Worker
-(`gods-eye-opensky-proxy`) is still the minimal OpenSky-only version, so the site shows DEMO ships until you do this.
-Everything below stays on the **Cloudflare free plan** (no paid add-ons).
+**Status (2026-11-01, Asia/Taipei): deployed** to account `071deaac3442c40becead3de785e765d` as `gods-eye-opensky-proxy`
+(KV namespace `gods-eye-subs` = `b8a90c73b1a242a7b0b592c6624e9d8b`, Durable Object class `Hub` migration `v1`, cron `*/2 * * * *`).
+Everything stays on the **Cloudflare free plan** (no paid add-ons).
+
+> ### ⚠ aisstream.io drops connections from Cloudflare's IPs
+> From the Worker/Durable Object, aisstream accepts the WebSocket upgrade and then closes it ~1–2 s later with code 1006 and no
+> `SubscriptionConfirmation` (the same key + subscription works from a normal IP; this matches several open reports on
+> github.com/aisstream/issues about datacenter IPs being dropped/throttled). So AIS is fed through a **collector on a non-datacenter IP**:
+> `scripts/ais-collector.mjs` connects to aisstream and POSTs batches to `POST /api/ships/ingest` (Bearer `INGEST_TOKEN`, a Worker secret).
+> The Worker itself still tries aisstream directly when no ingest data is fresh (harmless; it then reports the 1006 reason, and the site shows DEMO ships).
+> ```
+> AISSTREAM_API_KEY=… INGEST_TOKEN=… nohup node scripts/ais-collector.mjs >> ais-collector.log 2>&1 &    # Node >= 22
+> ```
+> Run it somewhere that stays on (home PC / Raspberry Pi / a VPS whose IP aisstream accepts). Ships stay in the Worker for 30 min after the collector stops.
 
 ## What you need to provide (2 things)
 
 | What | Where it comes from | Where it goes |
 |---|---|---|
-| **aisstream.io API key** | Sign in at <https://aisstream.io> with GitHub → *Account / API Keys* → create key (free) | Worker **secret** `AISSTREAM_API_KEY` |
+| **aisstream.io API key** | Sign in at <https://aisstream.io> with GitHub → *Account / API Keys* → create key (free) | Worker **secret** `AISSTREAM_API_KEY` (and the collector's environment) |
+| **Ingest token** | any random string (`head -c32 /dev/urandom \| od -An -tx1 \| tr -d ' \n'`) | Worker **secret** `INGEST_TOKEN` and the collector's environment |
 | **VAPID key pair** (for Web Push) | Generate locally: `node scripts/gen-vapid.mjs` (no account needed) | private key → Worker **secret** `VAPID_PRIVATE_KEY`; public key → Worker **var** `VAPID_PUBLIC_KEY` |
 
 The AIS key and the VAPID private key must never be committed or put in `assets/config.js`.
@@ -26,7 +38,7 @@ Without VAPID keys: the Alerts tab shows "push not configured".
 2. **Durable Object** class `Hub`, binding `HUB`, SQLite-backed (the free plan only allows SQLite DOs):
    migration `{"new_tag":"v1","new_sqlite_classes":["Hub"]}`.
 3. **KV namespace** (e.g. `gods-eye-subs`) bound as `SUBS`.
-4. **Secrets** `AISSTREAM_API_KEY`, `VAPID_PRIVATE_KEY`; **vars** `VAPID_PUBLIC_KEY`, optional `VAPID_SUBJECT` (`mailto:you@example.com`).
+4. **Secrets** `AISSTREAM_API_KEY`, `INGEST_TOKEN`, `VAPID_PRIVATE_KEY`; **vars** `VAPID_PUBLIC_KEY`, optional `VAPID_SUBJECT` (`mailto:you@example.com`).
 5. **Cron trigger** `*/2 * * * *` (free plan allows 5 crons per account).
 6. Keep the `workers.dev` subdomain route enabled (the site calls `https://gods-eye-opensky-proxy.numenaslan.workers.dev/api`).
 
@@ -56,10 +68,10 @@ In the app: Alerts tab → enable → "Send test push". On iOS 16.4+ you must fi
 
 ## How it works (free-plan design)
 * `GET /api/ships` → front Worker → Durable Object `Hub` (singleton). If data is older than 90 s the DO opens an outbound WebSocket to
-  `wss://stream.aisstream.io/v0/stream` for ~25 s (box `[[20,118],[27.5,124.5]]`, position + static messages), merges per MMSI, keeps 30 min.
+  `wss://stream.aisstream.io/v0/stream` for ~25 s (box 18–34°N 108–132°E: Taiwan **and neighbouring waters** — coverage inside Taiwan's own waters is almost empty on aisstream, 1 vessel / 2 min measured, while Hong Kong / S. China and Japan are well covered; position + static messages), merges per MMSI, keeps 30 min.
   Heavy work runs in the DO (30 s CPU) so the Worker's 10 ms CPU limit is never an issue.
 * Cron (every 2 min) only pokes the DO, which: fetches USGS `4.5_day.geojson` (new M4.5+ in the Taiwan box, ≤ 6 h old);
-  if there are CCG subscribers, collects AIS and looks for a CCG-looking vessel (heuristic: name HAIJING / CHINA COAST GUARD / CCG nnnn / 海警,
+  if there are CCG subscribers, looks at the AIS vessels in the DO for a CCG-looking one inside 20–27.5°N 116–124.5°E (heuristic: name HAIJING / CHINA COAST GUARD / CCG nnnn / 海警,
   or ship type 55 with MMSI 412/413/414); computes the next ISS pass per subscriber location (0.25° cells, CelesTrak TLE cached 6 h) and pushes when it starts in 1–7 min.
   Dedupe state lives in DO storage, not KV.
 * Web Push is hand-rolled on WebCrypto (RFC 8291 `aes128gcm` + RFC 8292 VAPID ES256), allow-listed push hosts only.
