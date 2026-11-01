@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <title>God's Eye View // ORB-7</title>
+  <meta name="description" content="Open-data satellite &amp; flight tracking globe demo (OpenSky Network + CelesTrak). 開放資料衛星與航班追蹤地球儀。">
+  <meta name="theme-color" content="#02060a">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="God's Eye">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="root"><p style="position:absolute;inset:0;display:grid;place-items:center;margin:0;color:#c8ff00;font:12px/1.4 ui-monospace,Menlo,monospace;letter-spacing:.2em">LOADING ORB-7…</p></div>
+  <noscript><p style="color:#fff;padding:1rem">This app needs JavaScript.</p></noscript>
+
+  <!-- satellite.js v6 (MIT) — SGP4 propagation -->
+  <script src="assets/vendor/satellite.min.js"></script>
+  <script src="assets/config.js"></script>
+  <script src="assets/live-data.js"></script>
+  <!-- bundled React + three.js + app (see src/ and build.mjs). Classic scripts (not type=module) so it also works from file:// -->
+  <script src="assets/textures.js"></script>
+  <script src="assets/app.bundle.js"></script>
+  <script>
+    // Offline-capable shell (live data is never cached by the service worker).
+    if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
+      window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+    }
+  </script>
+</body>
+</html>
