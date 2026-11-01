@@ -15,7 +15,7 @@
 import createPasses from "../../assets/passes.js";
 import satellite from "../../assets/vendor/satellite.min.js";
 import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
-import { applyAis, publicShips, isCcg, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
+import { applyAis, applyMpb, trimShips, publicShips, isCcg, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
 
@@ -80,7 +80,8 @@ export default {
     if (request.method === "GET" && p === "/api/ships") {
       if (!hub || !(env.AISSTREAM_API_KEY || env.INGEST_TOKEN)) return json(cors, { error: "AIS not configured" }, 503);
       const r = await hub.fetch("https://hub/ships");
-      return json(cors, await r.json(), r.status, { "Cache-Control": "public, max-age=20" });
+      // stream the body through untouched: re-parsing a few hundred KB of JSON would eat the 10 ms CPU budget of the free plan
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=20" }) });
     }
     if (request.method === "POST" && p === "/api/ships/ingest") {
       // Optional relay: a collector running on a non-datacenter IP (scripts/ais-collector.mjs) posts aisstream messages here,
@@ -117,7 +118,7 @@ export class Hub {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
     ctx.blockConcurrencyWhile(async () => {
-      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron"]); this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
+      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt"]); this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
       this.ships = s.get("ships") || {}; this.lastCollect = s.get("lastCollect") || 0; this.lastError = s.get("lastError") || "";
       this.everCollected = this.lastCollect > 0;
     });
@@ -146,12 +147,17 @@ export class Hub {
   async ingest(request) {
     let body; try { body = await request.json(); } catch { return new Response(JSON.stringify({ error: "bad json" }), { status: 400 }); }
     const msgs = Array.isArray(body && body.messages) ? body.messages.slice(0, 5000) : [];
-    const now = Date.now(); let n = 0;
-    for (const m of msgs) if (applyAis(this.ships, m, now)) n++;
+    const mpb = Array.isArray(body && body.ships) ? body.ships.slice(0, 8000) : []; // pre-normalised MPB (Taiwan AIS) records from the collector
+    const now = Date.now(); let n = 0, m = 0;
+    for (const x of msgs) if (applyAis(this.ships, x, now)) n++;
+    for (const x of mpb) if (applyMpb(this.ships, x, now)) m++;
     for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
-    this.lastCollect = now; this.lastError = ""; this.everCollected = true; this.diag = { source: "ingest", msgs: msgs.length, applied: n, at: now };
+    const dropped = trimShips(this.ships);
+    this.lastCollect = now; this.lastError = ""; this.everCollected = true;
+    this.diag = { source: "ingest", msgs: msgs.length, applied: n, mpb: mpb.length, mpbApplied: m, dropped, at: now };
+    if (mpb.length) { this.mpbAt = now; await this.ctx.storage.put("mpbAt", now); }
     await this.ctx.storage.put({ ships: this.ships, lastCollect: this.lastCollect, lastError: "", diag: this.diag });
-    return new Response(JSON.stringify({ ok: true, received: msgs.length, applied: n, tracked: Object.keys(this.ships).length }), { headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: true, received: msgs.length, applied: n, mpb: m, tracked: Object.keys(this.ships).length }), { headers: { "Content-Type": "application/json" } });
   }
 
   /* ---- AIS ---- */
@@ -160,7 +166,7 @@ export class Hub {
     if (!this.collecting && now - this.lastAttempt > STALE_MS && age > STALE_MS && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 50);
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
-    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, count: list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
   }
 
   async collect(ms = COLLECT_MS) {

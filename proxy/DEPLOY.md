@@ -15,6 +15,12 @@ Everything stays on the **Cloudflare free plan** (no paid add-ons).
 > ```
 > Run it somewhere that stays on (home PC / Raspberry Pi / a VPS whose IP aisstream accepts). Ships stay in the Worker for 30 min after the collector stops.
 
+## Second AIS source: Taiwan MPB (交通部航港局), no key
+`scripts/ais-collector.mjs` also polls `https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx` (needs `Referer: https://mpbais.motcmpb.gov.tw/aismpb/`, ~2.9 MB) every `MPB_SEC` (default 120 s, min 90 s),
+trims it to 19–28°N 116–126°E and the needed fields, and POSTs `{ships:[…]}` to `/api/ships/ingest`; the Worker merges it with aisstream by MMSI. It is done in the collector, not the Worker, because of the free plan's 10 ms CPU limit.
+The endpoint is undocumented and has no published licence — keep the polling rate low and attribute 交通部航港局.
+`AISSTREAM_API_KEY` is optional for the collector now (MPB-only mode); the ingest token is read from `INGEST_TOKEN` or `~/.config/gods-eye/ingest.token`.
+
 ## What you need to provide (2 things)
 
 | What | Where it comes from | Where it goes |

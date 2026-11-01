@@ -1,7 +1,7 @@
 // node proxy/test/run.mjs  — unit tests for the Worker's pure logic (no network, no Cloudflare runtime needed; Node >= 20).
 import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
-import { applyAis, publicShips, isCcg } from "../src/ais.mjs";
+import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
@@ -105,5 +105,50 @@ await ok("flights: everything else down -> OpenSky last resort; all down -> thro
   const r = await collectFlights({ fetch: f });
   assert.equal(r.source, "opensky"); assert.equal(r.flights[0].callsign, "KAL123"); assert.equal(r.flights[0].altFt, 34449); assert.equal(r.flights[0].speedKt, 447);
   await assert.rejects(collectFlights({ fetch: async () => { throw new Error("net down"); } }), /all flight sources failed/);
+});
+
+await ok("CCG heuristic: fishing (type 30) never matches on MMSI prefix alone; names still match; type 55 + prefix still matches", () => {
+  assert.ok(!isCcg({ name: "MINLONGYU61687", mmsi: "412446258", type: 30 }));
+  assert.ok(!isCcg({ name: "YU ZHENG 35306", mmsi: "412440933", type: 30 }));
+  assert.ok(isCcg({ name: "HAIJING 2901", mmsi: "412000001", type: 30 }));           // name wins even if flagged fishing
+  assert.ok(isCcg({ name: "ZHONGGUOHAIJIAN8039", mmsi: "412440999", type: 30 }));
+  assert.ok(isCcg({ name: "中國海警 2901", mmsi: "1" })); assert.ok(isCcg({ name: "CHINA COAST GUARD", mmsi: "1", type: 30 }));
+  assert.ok(isCcg({ name: "", mmsi: "412440933", type: 55 })); assert.ok(!isCcg({ name: "HAIXUN08186", mmsi: "413399510", type: 55 })); assert.ok(isCcg({ name: "CHINACOASTGUARD2302", mmsi: "413875034", type: 55 })); assert.ok(!isCcg({ name: "", mmsi: "416000009", type: 55 })); assert.ok(!isCcg({ name: "JIN HAI SHUN 5", mmsi: "413696780", type: 80 }));
+});
+
+const mpbF = (o) => ({ type: "Feature", geometry: { type: "Point", coordinates: [o.Longitude, o.Latitude] }, properties: { IMO_Number: "", ShipName: "X  ", MMSI: "412446258", Navigational_Status: "0", SOG: 9.5, COG: 320.3, Ship_and_Cargo_Type: 70, Record_Time: "2026/11/01 17:39:04", ...o } });
+await ok("MPB: Taipei-time parsing, bbox trim, field normalisation", () => {
+  assert.equal(parseMpbTime("2026/11/01 17:39:04"), Date.UTC(2026, 10, 1, 9, 39, 4)); assert.equal(parseMpbTime("garbage"), null);
+  const a = normalizeMpb(mpbF({ Latitude: 24.2, Longitude: 118.4, ShipName: "MINLONGYU61687      ", IMO_Number: "9123456", Ship_and_Cargo_Type: 30, Navigational_Status: "15", SOG: 102.3 }));
+  assert.deepEqual([a.mmsi, a.name, a.imo, a.type, a.nav, a.sog, a.cog, a.t], ["412446258", "MINLONGYU61687", "9123456", 30, null, null, 320.3, Date.UTC(2026, 10, 1, 9, 39, 4)]);
+  assert.equal(normalizeMpb(mpbF({ Latitude: 35, Longitude: 139 })), null);               // Tokyo: outside the box
+  assert.equal(normalizeMpb(mpbF({ Latitude: 24, Longitude: 121, MMSI: "12" })), null);   // bad MMSI
+  assert.equal(normalizeMpb(mpbF({ Latitude: 24, Longitude: 121, Record_Time: "" })), null);
+  assert.equal(normalizeMpb(mpbF({ Latitude: 24, Longitude: 121, IMO_Number: "0" })).imo, undefined);
+});
+await ok("MPB + aisstream merge by MMSI: fresher position wins, statics filled from either, src tracked", () => {
+  const map = {}, t0 = Date.UTC(2026, 10, 1, 9, 40);
+  // aisstream first (received "now"), then an older MPB record for the same ship -> aisstream position stays, MPB fills the name/type/imo
+  applyAis(map, { MessageType: "PositionReport", MetaData: { MMSI: 416000001 }, Message: { PositionReport: { UserID: 416000001, Latitude: 24.5, Longitude: 120.1, Sog: 12.4, Cog: 86.7 } } }, t0);
+  applyMpb(map, { mmsi: "416000001", lat: 24.4, lon: 120.0, t: t0 - 120000, sog: 3, cog: 1, name: "EVER GIVEN", type: 71, imo: "9811000" }, t0);
+  let s = map["416000001"]; assert.deepEqual([s.lat, s.lon, s.sog, s.name, s.type, s.imo, s.src], [24.5, 120.1, 12.4, "EVER GIVEN", 71, "9811000", "both"]);
+  // a fresher MPB record overrides the position
+  applyMpb(map, { mmsi: "416000001", lat: 24.6, lon: 120.2, t: t0 + 60000, sog: 11, cog: 90, name: "OTHER NAME" }, t0 + 61000);
+  s = map["416000001"]; assert.deepEqual([s.lat, s.sog, s.name, s.src], [24.6, 11, "EVER GIVEN", "both"]);
+  // MPB-only ship, future timestamps are clamped to now, invalid records rejected
+  assert.ok(applyMpb(map, { mmsi: "412446258", lat: 24.2, lon: 118.4, t: t0 + 9e6, name: "MINLONGYU61687", type: 30 }, t0)); assert.equal(map["412446258"].t, t0); assert.equal(map["412446258"].src, "mpb");
+  assert.ok(!applyMpb(map, { mmsi: "bad", lat: 1, lon: 1, t: 1 }, t0)); assert.ok(!applyMpb(map, { mmsi: "412446259", lat: NaN, lon: 1, t: 1 }, t0));
+  // aisstream arriving after MPB marks it "both" too
+  applyAis(map, { MessageType: "PositionReport", MetaData: { MMSI: 412446258 }, Message: { PositionReport: { UserID: 412446258, Latitude: 24.3, Longitude: 118.5, Sog: 8 } } }, t0 + 5000);
+  assert.equal(map["412446258"].src, "both");
+});
+await ok("publicShips: cap keeps CCG + commercial first, reports total; trimShips bounds storage", () => {
+  const map = {}, now = 1e12;
+  for (let i = 0; i < 50; i++) map["41600" + String(1000 + i).padStart(4, "0")] = { mmsi: "41600" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - i * 1000, type: 30, sog: 0 };           // stationary fishing
+  for (let i = 0; i < 10; i++) map["35300" + String(1000 + i).padStart(4, "0")] = { mmsi: "35300" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - 600000 - i, type: 70, sog: 12 };  // moving cargo (older)
+  map["412000001"] = { mmsi: "412000001", name: "HAIJING 2901", lat: 25, lon: 122, t: now - 900000, type: 30, sog: 0 };
+  const l = publicShips(map, now, 1800000, 12);
+  assert.equal(l.length, 12); assert.equal(l.total, 61); assert.equal(l[0].mmsi, "412000001"); assert.ok(l[0].ccg); assert.ok(l.slice(1, 11).every((x) => x.type === 70)); assert.equal(l[11].type, 30); assert.ok(!("_r" in l[0]));
+  assert.equal(trimShips(map, 20), 41); assert.equal(Object.keys(map).length, 20); assert.ok(map["412000001"] && map["353001000"]);
 });
 console.log(n + " tests passed");

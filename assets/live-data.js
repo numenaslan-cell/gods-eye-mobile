@@ -3,7 +3,7 @@
  *
  *  Flights    : adsb.lol (ODbL) -> adsb.fi -> OpenSky Network, merged + normalised by the Cloudflare Worker (/api/flights)
  *  Satellites : CelesTrak GP/TLE https://celestrak.org/  + satellite.js (SGP4)
- *  Ships (AIS): aisstream.io, relayed by the Cloudflare Worker (the API key lives there as a secret, never in the browser)
+ *  Ships (AIS): aisstream.io + Taiwan MPB AIS (交通部航港局), merged by MMSI in the Cloudflare Worker (keys / collector token never reach the browser)
  *
  * Exposes window.GodsEyeData = { state, subscribe(fn), start(), config }.
  * Every feed has a status: "loading" | "live" | "demo".  "demo" means generated
@@ -191,7 +191,7 @@
     var o = {
       id: s.mmsi, mmsi: s.mmsi, name: s.name || ("MMSI " + s.mmsi), hasName: !!s.name,
       lat: s.lat, lon: s.lon, sogKt: s.sog, cog: s.cog, hdg: course, vMs: moving ? s.sog * 0.514444 : 0,
-      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, t: now - (s.ageSec || 0) * 1000,
+      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, src: s.src || "ais", t: now - (s.ageSec || 0) * 1000,
     };
     o.typeLabel = o.ccg ? "CCG (HEURISTIC)" : shipTypeLabel(o.type); o.cls = shipClass(o);
     return o;
@@ -245,7 +245,7 @@
       shipFailures = 0;
       if (j.warming) { setShips("loading", [], "", "AIS relay warming up…"); scheduleShips(20000); return; }
       var list = parseShips(j);
-      setShips("live", list, "", j.error ? "stale: " + j.error : (j.ageSec != null ? "feed " + j.ageSec + "s old" : ""));
+      setShips("live", list, "", j.error ? "stale: " + j.error : (j.total > list.length ? "TOP " + list.length + " OF " + j.total : (j.ageSec != null ? "feed " + j.ageSec + "s old" : "")));
       scheduleShips(cfg.shipRefreshMs);
     }).catch(function (err) {
       var msg = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err);

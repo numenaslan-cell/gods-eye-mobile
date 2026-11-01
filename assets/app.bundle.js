@@ -4747,7 +4747,7 @@ void main() {
       bits.push(h("div", { key: "legend", className: "ge-legend" }, [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["fish", "FISHING"], ["other", "OTHER"], ["ccg", "CCG?"]].map(function (c) {
         return h("span", { key: c[0] }, h("i", { style: { background: SHIP_CSS[c[0]] } }), c[1]);
       })));
-      bits.push(h("p", { key: "src", className: "ge-src" }, "AIS: aisstream.io, relayed by own Cloudflare Worker · updated " + ago(ships.updated) + " ago · not for navigation"));
+      bits.push(h("p", { key: "src", className: "ge-src" }, "AIS: aisstream.io + 交通部航港局 (MPB) 臺灣海域船舶即時資訊, merged by MMSI via own Worker · updated " + ago(ships.updated) + " ago · not for navigation · CCG flag is a name/type heuristic"));
       return bits;
     }
 
@@ -4934,6 +4934,7 @@ void main() {
           h("a", { href: "https://adsb.fi", target: "_blank", rel: "noopener noreferrer" }, "adsb.fi"), " · ",
           h("a", { href: "https://opensky-network.org", target: "_blank", rel: "noopener noreferrer" }, "OpenSky"), " · ",
           h("a", { href: "https://aisstream.io", target: "_blank", rel: "noopener noreferrer" }, "aisstream.io"), " · ",
+          h("a", { href: "https://mpbais.motcmpb.gov.tw/aismpb/", target: "_blank", rel: "noopener noreferrer" }, "交通部航港局 MPB"), " · ",
           h("a", { href: "https://celestrak.org", target: "_blank", rel: "noopener noreferrer" }, "CelesTrak"), " · ",
           h("a", { href: "https://earthquake.usgs.gov", target: "_blank", rel: "noopener noreferrer" }, "USGS"), " · ",
           h("a", { href: "https://github.com/shashwatak/satellite-js", target: "_blank", rel: "noopener noreferrer" }, "satellite.js"),

@@ -15,7 +15,7 @@
 * ✈️ **台灣周邊真實航班**（[adsb.lol](https://adsb.lol)〔ODbL〕為主、[adsb.fi](https://adsb.fi) 備援、OpenSky 最後手段，由 Worker `/api/flights` 合併，範圍 21.5–26.5°N、119–123°E）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
 * 🛰️ **真實衛星**（CelesTrak TLE + satellite.js SGP4）：顯示衛星總數、**台灣上空的衛星清單**、ISS 即時位置（可一鍵追蹤）
 * 🌏 **地震圖層 + QUAKES 面板**：USGS 台灣周邊近 30 天 M3.0+ 地震，依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點，點選會飛到震央
-* 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料由自己的 Cloudflare Worker 向 aisstream.io 取得（API key 只存在 Worker secret），沒有 key 或失敗時顯示 **DEMO DATA**
+* 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料來源為 aisstream.io 與交通部航港局（MPB）臺灣海域 AIS，由收集器低頻率取得並經自己的 Cloudflare Worker 以 MMSI 合併（API key 只存在 Worker secret）；CCG 標記為名稱／船型啟發式（排除漁船型別 30 的純 MMSI 前綴比對），沒有 key 或失敗時顯示 **DEMO DATA**
 * 🛰️ **過境預測 (Passes)**：用瀏覽器定位（預設台北，也可手動輸入經緯度）預測未來 72 小時 ISS、天宮 (CSS) 與數顆亮星（HST、AJISAI、TERRA、AQUA、ENVISAT、ALOS）的過境：起／峰／止時間、最高仰角、起訖方位、是否「可能看得到」（衛星受日照且天色夠暗）；「LOOK HERE」羅盤會指出現在該看的方位與仰角，可選用手機羅盤；頁面開著時可在過境前 5 分鐘通知
 * 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（USGS）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關。需先部署 Worker（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）；iOS 16.4+ 須先加入主畫面
 * 🔎 搜尋：輸入呼號（如 `CAL`）、船名或 9 位 MMSI、衛星名稱（如 `STARLINK`、`ISS`）或座標（`25.03,121.56`）
@@ -70,7 +70,7 @@ assets/textures/        NASA Blue Marble / Black Marble 貼圖
 assets/vendor/          satellite.js 6.0.2（MIT）
 src/vendor.js           從原 artifact 抽出的 React / three.js / lucide 壓縮碼
 src/app.js              可讀的應用程式原始碼（已重寫）
-proxy/                  Cloudflare Worker：OpenSky CORS 代理、AIS 船舶中繼、Web Push（src/ 原始碼、dist/ 部署檔、DEPLOY.md）
+proxy/                  Cloudflare Worker：航班（adsb.lol → adsb.fi → OpenSky）、OpenSky CORS 代理、AIS 船舶中繼、Web Push（src/ 原始碼、dist/ 部署檔、DEPLOY.md）
 assets/passes.js        衛星過境預測核心（瀏覽器與 Worker 共用）
 assets/push.js          Web Push 前端
 scripts/gen-vapid.mjs   產生 VAPID 金鑰
@@ -84,6 +84,7 @@ scripts/gen-vapid.mjs   產生 VAPID 金鑰
 
 ## 致謝 / Credits
 
+* 船舶資料：[aisstream.io](https://aisstream.io) ＋ [交通部航港局](https://mpbais.motcmpb.gov.tw/aismpb/)「臺灣海域船舶即時資訊系統」（未公開文件的端點、無公開授權條款；僅低頻率輪詢，僅供展示用途）
 * 航班資料：[adsb.lol](https://adsb.lol)（© adsb.lol contributors，ODbL 1.0）、[adsb.fi](https://adsb.fi) Open Data（僅限非商業）、[OpenSky Network](https://opensky-network.org)（Schäfer et al., IPSN 2014）
 * 衛星軌道資料：[CelesTrak](https://celestrak.org)（Dr. T.S. Kelso）
 * SGP4：[satellite.js](https://github.com/shashwatak/satellite-js)（MIT）
