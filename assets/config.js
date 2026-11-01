@@ -9,7 +9,7 @@ window.GODS_EYE_CONFIG = {
   // Base URL of the OpenSky REST API. The public endpoint does NOT reliably send CORS
   // headers for third-party origins, so on GitHub Pages you will most likely want to
   // point this at your own tiny proxy (see proxy/cloudflare-worker.js and README).
-  openskyBase: "https://opensky-network.org/api",
+  openskyBase: "https://gods-eye-opensky-proxy.numenaslan.workers.dev/api",
 
   // Bounding box around Taiwan (degrees).
   bbox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 },

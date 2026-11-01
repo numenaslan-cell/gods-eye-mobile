@@ -10,16 +10,21 @@
  * resolution) so many visitors share one upstream credit.
  */
 const UPSTREAM = "https://opensky-network.org/api";
-const ALLOW_ORIGIN = "*"; // tighten to "https://<you>.github.io" in production
+// Allowed browser origins (exact match). Localhost is allowed for development.
+const ALLOWED_ORIGINS = ["https://numenaslan-cell.github.io"];
+const LOCAL_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const originOk = (o) => ALLOWED_ORIGINS.includes(o) || LOCAL_RE.test(o);
 
-const cors = (extra = {}) => ({
-  "Access-Control-Allow-Origin": ALLOW_ORIGIN,
+const corsFor = (origin) => (extra = {}) => ({
+  "Access-Control-Allow-Origin": originOk(origin) ? origin : ALLOWED_ORIGINS[0],
+  "Vary": "Origin",
   "Access-Control-Expose-Headers": "X-Rate-Limit-Remaining, X-Rate-Limit-Retry-After-Seconds",
   ...extra,
 });
 
 export default {
   async fetch(request) {
+    const cors = corsFor(request.headers.get("Origin") || "");
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors({ "Access-Control-Allow-Methods": "GET" }) });
     const url = new URL(request.url);
     if (request.method !== "GET" || url.pathname !== "/api/states/all") return new Response("Not found", { status: 404, headers: cors() });
