@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
 import { applyAis, publicShips, isCcg } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
+import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
 
 await ok("RFC 8291 appendix-A test vector (aes128gcm payload encryption)", async () => {
@@ -70,5 +71,39 @@ await ok("subscription validation", () => {
   assert.ok(validateSubscription({ ...good, endpoint: "https://evil.example/x" })); assert.ok(validateSubscription({ ...good, endpoint: "http://fcm.googleapis.com/x" }));
   assert.ok(validateSubscription({ ...good, keys: { p256dh: key(10), auth: key(16) } })); assert.ok(validateSubscription(null));
   assert.equal(validateSubscription({ ...good, endpoint: "https://web.push.apple.com/QAB" }), null); assert.equal(validateSubscription({ ...good, endpoint: "https://updates.push.services.mozilla.com/wpush/v2/x" }), null);
+});
+
+const jr = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
+await ok("flights: adsb.lol normalisation (ground skipped, units, callsign/reg fallback, country by ICAO block)", () => {
+  const a = normalizeAdsb({ hex: "899123", flight: "CAL123  ", alt_baro: 35000, gs: 450, track: 90.5, baro_rate: -640, lat: 24.5, lon: 121.2, r: "B-18901", t: "A359" });
+  assert.deepEqual([a.id, a.callsign, a.country, a.altFt, a.speedKt, a.hdg, a.vrFpm, a.lat], ["899123", "CAL123", "Taiwan", 35000, 450, 90.5, -640, 24.5]);
+  assert.ok(Math.abs(a.vMs - 231.5) < 0.1);
+  assert.equal(normalizeAdsb({ hex: "780dc5", alt_baro: "ground", lat: 24, lon: 121 }), null);
+  assert.equal(normalizeAdsb({ hex: "780dc5", alt_baro: 100 }), null);
+  const b = normalizeAdsb({ hex: "780dc5", r: "B-1656", alt_geom: 37625, lat: 24.85, lon: 118.55 });
+  assert.equal(b.callsign, "B-1656"); assert.equal(b.altFt, 37625); assert.equal(b.speedKt, null); assert.equal(b.country, "China");
+  assert.equal(hexCountry("840abc"), "Japan"); assert.equal(hexCountry("789123"), "Hong Kong"); assert.equal(hexCountry("~ffffff"), "");
+  assert.equal(dedupeByHex([[{ id: "a", n: 1 }, { id: "b" }], [{ id: "a", n: 2 }]]).length, 2);
+});
+const lolAc = (hex, lat, lon) => ({ hex, flight: hex.toUpperCase(), alt_baro: 30000, gs: 400, track: 10, lat, lon });
+await ok("flights: both adsb.lol circles merged and deduped by hex; box crop applied", async () => {
+  const calls = [];
+  const f = async (u) => { calls.push(u); if (/point\/25\.3\/121/.test(u)) return jr({ ac: [lolAc("aaa111", 25, 121), lolAc("bbb222", 23, 121), lolAc("far999", 40, 140)] }); if (/point\/22\.6\/120\.8/.test(u)) return jr({ ac: [lolAc("bbb222", 23, 121), lolAc("ccc333", 22, 120)] }); throw new Error("unexpected " + u); };
+  const r = await collectFlights({ fetch: f });
+  assert.equal(r.source, "adsb.lol"); assert.deepEqual(r.flights.map((x) => x.id).sort(), ["aaa111", "bbb222", "ccc333"]); assert.equal(r.count, 3);
+  assert.ok(calls.every((u) => /^https:\/\/api\.adsb\.lol\/v2\/point\/[\d.]+\/[\d.]+\/250$/.test(u)));
+});
+await ok("flights: a failing circle falls back to adsb.fi (aircraft key), no OpenSky call", async () => {
+  const calls = [];
+  const f = async (u) => { calls.push(u); if (/adsb\.lol.*25\.3/.test(u)) return jr({}, 429); if (/adsb\.lol/.test(u)) return jr({ ac: [lolAc("ccc333", 22, 120)] }); if (/adsb\.fi.*lat\/25\.3\/lon\/121\/dist\/250/.test(u)) return jr({ aircraft: [lolAc("aaa111", 25, 121)] }); throw new Error("unexpected " + u); };
+  const r = await collectFlights({ fetch: f });
+  assert.equal(r.source, "adsb.lol+adsb.fi"); assert.equal(r.count, 2); assert.ok(r.partial[0].includes("429")); assert.ok(!calls.some((u) => /opensky/.test(u)));
+});
+await ok("flights: everything else down -> OpenSky last resort; all down -> throws", async () => {
+  const os = { states: [["71be1f", "KAL123 ", "South Korea", 0, 0, 121.5, 24.1, 10000, false, 230, 45, 2, null, 10500]] };
+  const f = async (u) => { if (/opensky/.test(u)) return jr(os); throw new Error("net down"); };
+  const r = await collectFlights({ fetch: f });
+  assert.equal(r.source, "opensky"); assert.equal(r.flights[0].callsign, "KAL123"); assert.equal(r.flights[0].altFt, 34449); assert.equal(r.flights[0].speedKt, 447);
+  await assert.rejects(collectFlights({ fetch: async () => { throw new Error("net down"); } }), /all flight sources failed/);
 });
 console.log(n + " tests passed");

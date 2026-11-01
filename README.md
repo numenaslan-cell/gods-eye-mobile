@@ -12,7 +12,7 @@
 ## 功能
 
 * 🌐 3D 地球（three.js）：日間 / 夜視 (NVG) / 熱像 (THERM) 三種顯示模式，晝夜交界線依「現在時間」計算
-* ✈️ **台灣周邊真實航班**（OpenSky，範圍 21.5–26.5°N、119–123°E）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
+* ✈️ **台灣周邊真實航班**（[adsb.lol](https://adsb.lol)〔ODbL〕為主、[adsb.fi](https://adsb.fi) 備援、OpenSky 最後手段，由 Worker `/api/flights` 合併，範圍 21.5–26.5°N、119–123°E）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
 * 🛰️ **真實衛星**（CelesTrak TLE + satellite.js SGP4）：顯示衛星總數、**台灣上空的衛星清單**、ISS 即時位置（可一鍵追蹤）
 * 🌏 **地震圖層 + QUAKES 面板**：USGS 台灣周邊近 30 天 M3.0+ 地震，依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點，點選會飛到震央
 * 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料由自己的 Cloudflare Worker 向 aisstream.io 取得（API key 只存在 Worker secret），沒有 key 或失敗時顯示 **DEMO DATA**
@@ -84,7 +84,7 @@ scripts/gen-vapid.mjs   產生 VAPID 金鑰
 
 ## 致謝 / Credits
 
-* 航班資料：[OpenSky Network](https://opensky-network.org)（Schäfer et al., IPSN 2014）
+* 航班資料：[adsb.lol](https://adsb.lol)（© adsb.lol contributors，ODbL 1.0）、[adsb.fi](https://adsb.fi) Open Data（僅限非商業）、[OpenSky Network](https://opensky-network.org)（Schäfer et al., IPSN 2014）
 * 衛星軌道資料：[CelesTrak](https://celestrak.org)（Dr. T.S. Kelso）
 * SGP4：[satellite.js](https://github.com/shashwatak/satellite-js)（MIT）
 * 地球貼圖：NASA Earth Observatory — Blue Marble Next Generation、Black Marble

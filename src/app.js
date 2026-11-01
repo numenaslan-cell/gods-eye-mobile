@@ -866,7 +866,7 @@
 
     function flightsBody() {
       return [
-        flights.status === "demo" && h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — OpenSky unreachable (" + (flights.error || "?") + "). Retrying…"),
+        flights.status === "demo" && h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — flight feeds unreachable (" + (flights.error || "?") + "). Retrying…"),
         selected ? [
           h("div", { className: "ge-pick", key: "pick" },
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous aircraft", onClick: function () { cycle(-1); } }, "‹"),
@@ -880,8 +880,8 @@
              ["HDG", Math.round(selected.hdg) + "°"],
              ["V/S", selected.vrFpm != null ? fmtN(selected.vrFpm) + " fpm" : "--"]].map(function (kv) { return row(kv[0], kv[1]); })),
           h("button", { key: "follow", type: "button", className: cx("ge-btn", "ge-wide", follow && "is-on"), "aria-pressed": follow, onClick: toggleFollow }, follow ? "● FOLLOWING" : "FOLLOW AIRCRAFT"),
-        ] : h("p", { key: "n", className: "ge-note" }, flights.status === "loading" ? "Contacting OpenSky…" : "NO AIRCRAFT IN RANGE"),
-        h("p", { key: "s", className: "ge-src" }, "OpenSky Network · updated " + ago(flights.updated) + " ago"),
+        ] : h("p", { key: "n", className: "ge-note" }, flights.status === "loading" ? "Contacting flight feeds…" : "NO AIRCRAFT IN RANGE"),
+        h("p", { key: "s", className: "ge-src" }, "ADS-B via " + (flights.source || "adsb.lol") + " · adsb.lol data © adsb.lol contributors, ODbL 1.0 · fallback adsb.fi (non-commercial) / OpenSky · updated " + ago(flights.updated) + " ago"),
       ];
     }
 
@@ -1098,7 +1098,9 @@
           h("input", { type: "search", enterKeyHint: "search", autoComplete: "off", autoCapitalize: "characters", spellCheck: false, value: query, onChange: function (e) { setQuery(e.target.value); }, placeholder: "FLIGHT / SHIP / SAT / LAT,LON", "aria-label": "Search flight, ship name or MMSI, satellite or coordinates" }),
           h("button", { type: "submit", className: "ge-btn ge-go" }, "GO")),
         h("footer", { className: "ge-credit" },
-          "DATA: ", h("a", { href: "https://opensky-network.org", target: "_blank", rel: "noopener noreferrer" }, "OpenSky Network"), " · ",
+          "DATA: ", h("a", { href: "https://adsb.lol", target: "_blank", rel: "noopener noreferrer" }, "adsb.lol (ODbL)"), " · ",
+          h("a", { href: "https://adsb.fi", target: "_blank", rel: "noopener noreferrer" }, "adsb.fi"), " · ",
+          h("a", { href: "https://opensky-network.org", target: "_blank", rel: "noopener noreferrer" }, "OpenSky"), " · ",
           h("a", { href: "https://aisstream.io", target: "_blank", rel: "noopener noreferrer" }, "aisstream.io"), " · ",
           h("a", { href: "https://celestrak.org", target: "_blank", rel: "noopener noreferrer" }, "CelesTrak"), " · ",
           h("a", { href: "https://earthquake.usgs.gov", target: "_blank", rel: "noopener noreferrer" }, "USGS"), " · ",

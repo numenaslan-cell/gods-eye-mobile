@@ -1,7 +1,8 @@
 /**
  * God's Eye View // ORB-7 — Cloudflare Worker (free plan).
  *
- *   GET  /api/states/all   OpenSky CORS proxy (10 s edge cache)
+ *   GET  /api/flights      flights around Taiwan: adsb.lol -> adsb.fi -> OpenSky, normalised, 10 s Cache API
+ *   GET  /api/states/all   OpenSky CORS proxy (10 s edge cache; legacy route, kept as the client's fallback)
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
  *   POST /api/push/subscribe | /unsubscribe | /test   Web Push subscriptions (stored in KV)
@@ -16,6 +17,7 @@ import satellite from "../../assets/vendor/satellite.min.js";
 import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
 import { applyAis, publicShips, isCcg, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
+import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
 
 const UPSTREAM = "https://opensky-network.org/api";
 const SITE = "https://numenaslan-cell.github.io/gods-eye-mobile/";
@@ -43,13 +45,27 @@ async function tokenOk(given, expected) { // constant-time compare via SHA-256 d
 
 /* ------------------------------------------------------------------ front Worker */
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin") || "";
     const cors = corsFor(origin);
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors({ "Access-Control-Allow-Methods": "GET, POST", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400" }) });
     const p = url.pathname;
 
+    if (request.method === "GET" && p === "/api/flights") {
+      const num = (k, d) => { const v = parseFloat(url.searchParams.get(k)); return isFinite(v) ? Math.round(v * 10) / 10 : d; };
+      const box = { lamin: num("lamin", FLIGHT_BOX.lamin), lomin: num("lomin", FLIGHT_BOX.lomin), lamax: num("lamax", FLIGHT_BOX.lamax), lomax: num("lomax", FLIGHT_BOX.lomax) };
+      const cache = typeof caches !== "undefined" ? caches.default : null;
+      const key = new Request(url.origin + "/api/flights?" + [box.lamin, box.lomin, box.lamax, box.lomax].join(","));
+      let body = null;
+      if (cache) { const hit = await cache.match(key); if (hit) body = await hit.text(); }
+      if (body == null) {
+        try { body = JSON.stringify(await collectFlights({ box, openskyBase: UPSTREAM })); }
+        catch (e) { return json(cors, { error: String((e && e.message) || e).slice(0, 300) }, 502); }
+        if (cache) { const put = cache.put(key, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=10" } })); if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put; }
+      }
+      return new Response(body, { status: 200, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=10" }) });
+    }
     if (request.method === "GET" && p === "/api/states/all") {
       let upstream;
       try { upstream = await fetch(UPSTREAM + "/states/all" + url.search, { cf: { cacheTtl: 10, cacheEverything: true } }); }

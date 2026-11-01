@@ -1,7 +1,7 @@
 /*
  * God's Eye View // ORB-7 — live public data layer (client-side, no API keys).
  *
- *  Flights    : OpenSky Network  https://opensky-network.org/apidoc/
+ *  Flights    : adsb.lol (ODbL) -> adsb.fi -> OpenSky Network, merged + normalised by the Cloudflare Worker (/api/flights)
  *  Satellites : CelesTrak GP/TLE https://celestrak.org/  + satellite.js (SGP4)
  *  Ships (AIS): aisstream.io, relayed by the Cloudflare Worker (the API key lives there as a secret, never in the browser)
  *
@@ -34,7 +34,7 @@
   var R_EARTH_KM = 6371;
   var listeners = [];
   var state = {
-    flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "OpenSky Network", nextTry: 0 },
+    flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "adsb.lol", nextTry: 0 },
     ships: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
     quakes: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "USGS", nextTry: 0 },
     sats: {
@@ -109,21 +109,46 @@
     flightTimer = setTimeout(pollFlights, ms);
   }
 
-  function pollFlights() {
-    if (document.hidden) { scheduleFlights(cfg.flightRefreshMs); return; }
+  // Primary: the Worker's /flights (adsb.lol -> adsb.fi -> OpenSky, normalised server side, 10 s edge cache).
+  function fetchFlightsProxy() {
+    var b = cfg.bbox, now = Date.now();
+    var url = cfg.proxyBase + "/flights?lamin=" + b.lamin + "&lomin=" + b.lomin + "&lamax=" + b.lamax + "&lomax=" + b.lomax;
+    return fetchTimeout(url, 14000, { cache: "no-store" }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }).then(function (j) {
+      if (!j || !Array.isArray(j.flights)) throw new Error("bad flights payload");
+      var list = j.flights.map(function (f) { f.t = now; if (f.vMs == null) f.vMs = 0; return f; });
+      list.sort(function (a, c) { return a.callsign < c.callsign ? -1 : a.callsign > c.callsign ? 1 : 0; });
+      return { list: list, source: sourceLabel(j.source), remaining: NaN };
+    });
+  }
+  function sourceLabel(src) {
+    var m = { "adsb.lol": "adsb.lol", "adsb.fi": "adsb.fi", "opensky": "OpenSky Network" };
+    return String(src || "").split("+").map(function (x) { return m[x] || x; }).join(" + ") || "adsb.lol";
+  }
+  // Legacy / last resort in the browser: OpenSky REST (via the Worker's /states/all CORS proxy).
+  function fetchFlightsOpenSky() {
     var b = cfg.bbox;
     var url = cfg.openskyBase + "/states/all?lamin=" + b.lamin + "&lomin=" + b.lomin + "&lamax=" + b.lamax + "&lomax=" + b.lomax;
-    fetchTimeout(url, 12000, { cache: "no-store" }).then(function (res) {
+    return fetchTimeout(url, 12000, { cache: "no-store" }).then(function (res) {
       if (res.status === 429) {
         var wait = parseInt(res.headers.get("X-Rate-Limit-Retry-After-Seconds"), 10);
         var e = new Error("HTTP 429 (OpenSky anonymous rate limit)"); e.wait = (isFinite(wait) ? wait : 300) * 1000; throw e;
       }
       if (!res.ok) throw new Error("HTTP " + res.status);
       var remaining = parseInt(res.headers.get("X-Rate-Limit-Remaining"), 10);
-      return res.json().then(function (j) { return { j: j, remaining: remaining }; });
-    }).then(function (r) {
+      return res.json().then(function (j) { return { list: parseOpenSky(j), source: "OpenSky Network", remaining: remaining }; });
+    });
+  }
+
+  function pollFlights() {
+    if (document.hidden) { scheduleFlights(cfg.flightRefreshMs); return; }
+    var p = cfg.proxyBase ? fetchFlightsProxy().catch(function (e) { console.warn("[flights] worker route failed, falling back to OpenSky:", e && e.message); return fetchFlightsOpenSky(); }) : fetchFlightsOpenSky();
+    p.then(function (r) {
       flightFailures = 0;
-      setFlights("live", parseOpenSky(r.j), "");
+      state.flights.source = r.source;
+      setFlights("live", r.list, "");
       // If the credit counter is readable (CORS-exposed) and low, slow down.
       scheduleFlights(isFinite(r.remaining) && r.remaining < 40 ? 120000 : cfg.flightRefreshMs);
     }).catch(function (err) {

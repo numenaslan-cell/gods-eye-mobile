@@ -8,7 +8,20 @@
 | `https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle` | ✅ HTTP 200，`access-control-allow-origin: *`，約 2.7 KB | 可從任何來源直接用 `fetch()` |
 | `https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle` | ✅ HTTP 200，`access-control-allow-origin: *`，約 2.67 MB（15,899 顆） | 在 headless Chrome 實測可載入、解析並用 SGP4 推算；短時間重複下載會被擋（實測遇到 HTTP 403），所以 App 會快取 2 小時並自動退回 `stations` 群組 |
 | `https://opensky-network.org/api/states/all?lamin=21.5&lomin=119&lamax=26.5&lomax=123` | ⚠️ 無法在沙盒測試；**第三方來源的 CORS 不可靠** | 官方文件未承諾 CORS；公開 issue 與第三方測試顯示對非自家 origin 不送 `Access-Control-Allow-Origin`。匿名額度：每日 400 credits（此範圍 20 平方度＝1 credit/次），超過回 `429` + `X-Rate-Limit-Retry-After-Seconds` |
-| `https://api.adsb.lol/v2/point/…`、`https://opendata.adsb.fi/api/v2/…`（替代來源） | ❌ 可用但**沒有** CORS 標頭 | 瀏覽器端無法直接使用；`api.airplanes.live` 回 403（需申請） |
+| `https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}`、`https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}` | ✅ 可用（2026-11-01 在沙盒實測，回傳台灣周邊約 40–50 架）但**沒有** CORS 標頭 | 瀏覽器端不能直接用 → 由 Worker 的 `/api/flights` 代理（見下方「航班」）；`api.airplanes.live` 回 403（需申請） |
+
+## 航班 / Flights（2026-11-01 起改版）
+
+瀏覽器 → Worker `GET /api/flights` →（Cache API 10 秒）→ **adsb.lol**（主要）→ **adsb.fi**（備援）→ **OpenSky**（最後手段）。Worker 在伺服器端合併並轉成 App 既有的航班格式（`id, callsign, country, lat, lon, altFt, speedKt, vMs, hdg, vrFpm`），前端若連不到 `/api/flights` 會退回舊的 `/api/states/all`（OpenSky）。
+
+| 來源 | 用法 | 授權 / 條款 |
+|---|---|---|
+| [adsb.lol](https://adsb.lol)（主要） | `https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}`，nm 最大 250；用 2 個圓（25.3°N 121.0°E 與 22.6°N 120.8°E，各 250 nm）涵蓋台灣與周邊，依 `hex` 去重，再裁切到前端要求的範圍 | 資料以 **ODbL 1.0** 釋出（© adsb.lol contributors）。使用需**署名**並維持相同授權散布衍生資料庫；本站在介面頁尾與航班面板標示 |
+| [adsb.fi](https://adsb.fi)（備援） | `https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}`；限制 **1 request/秒**（Worker 內以間隔 1.1 秒序列化，且只在某個圓 adsb.lol 失敗時才呼叫） | adsb.fi Open Data：**僅限非商業使用**，需署名 |
+| [OpenSky Network](https://opensky-network.org)（最後手段） | `https://opensky-network.org/api/states/all`（匿名每日約 400 credits） | 見 OpenSky 使用條款（研究／非商業） |
+
+* 地面航班（`alt_baro = "ground"`）與沒有位置的目標會被丟掉；高度＝氣壓高度（ft），缺值時用幾何高度；國別由 ICAO 24-bit 位址區段推得（小型對照表，未知則空白）。
+* Worker 回應含 `source`（實際用到的來源，如 `adsb.lol` 或 `adsb.lol+adsb.fi`）、`partial`（有哪些來源失敗）。UI 的 FLT 徽章與面板會顯示實際來源。
 
 ## 船舶 AIS、推播與過境預測的資料來源 / Ships (AIS), push alerts & pass predictions
 
