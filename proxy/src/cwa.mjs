@@ -5,7 +5,9 @@
 export const CWA_BASE = "https://opendata.cwa.gov.tw/api/v1/rest/datastore";
 export const WARNING_PHENOMENA = /颱風|豪雨|大雨|強風|濃霧|低溫|高溫|海嘯|地震|海上|陸上|大浪|長浪/;
 
-const ms = (t) => { const x = Date.parse(t); return isFinite(x) ? x : null; };
+// CWA timestamps are Taipei time; some datasets omit the offset ("2026-11-02 05:00:00")
+const ms = (t) => { const str = String(t || "").trim(), x = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(str) ? str : str.replace(" ", "T") + "+08:00"); return isFinite(x) ? x : null; };
+const pick = (o, ...names) => { for (const n of names) if (o && o[n] != null) return o[n]; return undefined; }; // the JSON key casing differs between datasets / API versions
 const num = (v) => { const x = typeof v === "string" ? parseFloat(v) : v; return typeof x === "number" && isFinite(x) ? x : null; };
 
 /** One E-A0015-001 / E-A0016-001 "Earthquake" record -> app quake. */
@@ -33,22 +35,31 @@ export function mergeQuakes(...lists) { // dedupe by id, newest first
   return [...m.values()].sort((a, b) => b.t - a.t);
 }
 
-/** W-C0034-005 tropical cyclones. coordinate is "lon,lat". */
+/** W-C0034-005 tropical cyclones (live API uses PascalCase: TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[] / ForecastData.Fix[]; camelCase tolerated). */
 export function normalizeTyphoons(json) {
-  const arr = (json && json.records && json.records.tropicalCyclones && json.records.tropicalCyclones.tropicalCyclone) || [];
-  const co = (c) => { const p = String(c || "").split(",").map(parseFloat); return isFinite(p[0]) && isFinite(p[1]) ? { lon: p[0], lat: p[1] } : null; };
-  const pickPred = (mp) => { const a = Array.isArray(mp) ? mp : []; const z = a.find((x) => x && /zh/i.test(x.lang || "")) || a[0]; return z && z.value ? String(z.value) : ""; };
-  return (Array.isArray(arr) ? arr : [arr]).map((c) => {
-    const fixes = (c.analysisData && c.analysisData.fix) || [], fx = Array.isArray(fixes) ? fixes : [fixes];
-    const track = fx.map((f) => { const p = co(f.coordinate); return p && { t: ms(f.fixTime), lat: p.lat, lon: p.lon }; }).filter(Boolean).slice(-40);
-    const last = fx[fx.length - 1] || {}, lp = co(last.coordinate);
-    const fcRaw = (c.forecastData && c.forecastData.forecast) || (c.forecastData && c.forecastData.fix) || [], fc = Array.isArray(fcRaw) ? fcRaw : [fcRaw];
-    const forecast = fc.map((f) => { const p = co(f.coordinate); return p && { hour: num(f.tau != null ? f.tau : f.forecastHour), lat: p.lat, lon: p.lon, maxWind: num(f.maxWindSpeed), pressure: num(f.pressure), probRadius: f.radiusOf70PercentProbability != null ? num(f.radiusOf70PercentProbability) : null }; }).filter(Boolean);
+  const r = (json && json.records) || {};
+  const root = pick(r, "TropicalCyclones", "tropicalCyclones") || {};
+  let arr = pick(root, "TropicalCyclone", "tropicalCyclone") || [];
+  arr = Array.isArray(arr) ? arr : [arr];
+  const list = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
+  const pt = (f) => { const lat = num(pick(f, "CoordinateLatitude", "latitude")), lon = num(pick(f, "CoordinateLongitude", "longitude"));
+    if (lat != null && lon != null) return { lat, lon };
+    const p = String(pick(f, "coordinate") || "").split(",").map(parseFloat); return isFinite(p[0]) && isFinite(p[1]) ? { lon: p[0], lat: p[1] } : null; };
+  const radius = (c) => (c ? num(pick(c, "Radius", "radius")) : null);
+  const pickPred = (mp) => { const a = list(mp); const z = a.find((x) => x && /zh/i.test(x.lang || "")) || a[0]; return z && z.value ? String(z.value) : ""; };
+  return arr.map((c) => {
+    const ad = pick(c, "AnalysisData", "analysisData") || {}, fx = list(pick(ad, "Fix", "fix"));
+    const track = fx.map((f) => { const p = pt(f); return p && { t: ms(pick(f, "DateTime", "fixTime")), lat: p.lat, lon: p.lon }; }).filter(Boolean).slice(-40);
+    const last = fx[fx.length - 1] || {}, lp = pt(last);
+    const fd = pick(c, "ForecastData", "forecastData") || {}, fc = list(pick(fd, "Fix", "fix", "Forecast", "forecast"));
+    const forecast = fc.map((f) => { const p = pt(f); return p && { hour: num(pick(f, "ForecastHour", "tau", "forecastHour")), lat: p.lat, lon: p.lon, maxWind: num(pick(f, "MaxWindSpeed", "maxWindSpeed")), pressure: num(pick(f, "Pressure", "pressure")), probRadius: num(pick(f, "Radius70PercentProbability", "radiusOf70PercentProbability")) }; }).filter(Boolean);
     return {
-      name: c.typhoonName || "", cwaName: c.cwaTyphoonName || "", year: c.year || "", tyNo: c.cwaTyNo || "", tdNo: c.cwaTdNo || "",
-      time: ms(last.fixTime), lat: lp ? lp.lat : null, lon: lp ? lp.lon : null, maxWind: num(last.maxWindSpeed), gust: num(last.maxGustSpeed), pressure: num(last.pressure),
-      speedKmh: num(last.movingSpeed), direction: last.movingDirection || "", movement: pickPred(last.movingPrediction),
-      r15: last.circleOf15Ms ? num(last.circleOf15Ms.radius) : null, r25: last.circleOf25Ms ? num(last.circleOf25Ms.radius) : null,
+      name: pick(c, "TyphoonName", "typhoonName") || "", cwaName: pick(c, "CwaTyphoonName", "cwaTyphoonName") || "", year: pick(c, "Year", "year") || "",
+      tyNo: pick(c, "CwaTyNo", "cwaTyNo") || "", tdNo: pick(c, "CwaTdNo", "cwaTdNo") || "",
+      time: ms(pick(last, "DateTime", "fixTime")), lat: lp ? lp.lat : null, lon: lp ? lp.lon : null,
+      maxWind: num(pick(last, "MaxWindSpeed", "maxWindSpeed")), gust: num(pick(last, "MaxGustSpeed", "maxGustSpeed")), pressure: num(pick(last, "Pressure", "pressure")),
+      speedKmh: num(pick(last, "MovingSpeed", "movingSpeed")), direction: pick(last, "MovingDirection", "movingDirection") || "", movement: pickPred(pick(last, "MovingPrediction", "movingPrediction")),
+      r15: radius(pick(last, "Circle15ms", "circleOf15Ms")), r25: radius(pick(last, "Circle25ms", "circleOf25Ms")),
       track, forecast,
     };
   }).filter((t) => t.lat != null);

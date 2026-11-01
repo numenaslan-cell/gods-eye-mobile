@@ -23,9 +23,9 @@
 * 地面航班（`alt_baro = "ground"`）與沒有位置的目標會被丟掉；高度＝氣壓高度（ft），缺值時用幾何高度；國別由 ICAO 24-bit 位址區段推得（小型對照表，未知則空白）。
 * Worker 回應含 `source`（實際用到的來源，如 `adsb.lol` 或 `adsb.lol+adsb.fi`）、`partial`（有哪些來源失敗）。UI 的 FLT 徽章與面板會顯示實際來源。
 
-## 中央氣象署（CWA）地震／颱風／警特報 — 需要使用者自己的 API key（尚未啟用）
+## 中央氣象署（CWA）地震／颱風／警特報 — 需要使用者自己的 API key
 
-程式已寫好但**預設關閉**：Worker 只有在設定了 secret `CWA_API_KEY` 時才會呼叫 CWA；沒有 key 時 `/api/quakes`、`/api/typhoon`、`/api/warnings` 回 `{"enabled":false,"source":"usgs"}`，前端就維持原本的 USGS 地震資料（推播也維持 USGS M4.5+）。**不使用 CWA 公開測試 key**，專案內也沒有任何 key。
+**預設關閉**：Worker 只有在設定了 secret `CWA_API_KEY`（使用者自己的免費 key，只存在 Worker secret，不在 repo 或前端）時才會呼叫 CWA；沒有 key 時 `/api/quakes`、`/api/typhoon`、`/api/warnings` 回 `{"enabled":false,"source":"usgs"}`，前端就維持原本的 USGS 地震資料（推播也維持 USGS M4.5+）。**不使用 CWA 公開測試 key**，專案內也沒有任何 key。
 
 | 資料集 | 用途 | Worker 路由 |
 |---|---|---|
@@ -36,7 +36,7 @@
 * 取得 key：<https://opendata.cwa.gov.tw/> 會員登入 →「取得授權碼」（免費）。設定：`wrangler secret put CWA_API_KEY`，或用 Cloudflare API `PUT /accounts/<id>/workers/scripts/gods-eye-opensky-proxy/secrets {"name":"CWA_API_KEY","text":"CWA-…","type":"secret_text"}`。**不需要重新部署程式**。
 * 授權：政府資料開放授權條款第 1 版；請標示「資料來源：交通部中央氣象署」（啟用後 UI 會顯示）。
 * CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內抓取與解析（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
-* 驗證狀況：E-A0015-001／E-A0016-001 的解析以**真實回應樣本**測試（`proxy/test/fixtures/`）；颱風與警特報的解析依官方產品說明文件的欄位結構，用**合成資料**測試；**尚未用真實 key 對真實 CWA API 驗證**。
+* 驗證狀況（2026-11-01）：四個資料集都用使用者自己的 key 對真實 API 測試過；解析以**真實回應樣本**（`proxy/test/fixtures/`，已縮減）做單元測試。注意：颱風資料集的實際 JSON 欄位是 PascalCase（`TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[]`、`CoordinateLongitude/Latitude`），警特報的 `validTime` 沒有時區（視為台北時間 +08:00）；解析器兩種大小寫都接受。
 
 ## 船舶 AIS、推播與過境預測的資料來源 / Ships (AIS), push alerts & pass predictions
 
