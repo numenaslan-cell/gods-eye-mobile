@@ -93,8 +93,9 @@ async function cwaGet(env, dataset, f) {
   const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 10000);
   try {
     const r = await f(`${base}/${dataset}?Authorization=${encodeURIComponent(env.CWA_API_KEY)}&format=JSON`, { signal: ctl.signal, headers: { Accept: "application/json" } });
-    if (!r.ok) throw new Error(dataset + " HTTP " + r.status);
-    const j = await r.json();
+    const text = await r.text();
+    if (!r.ok) throw new Error(dataset + " HTTP " + r.status + " " + text.replace(/\s+/g, " ").slice(0, 120));
+    let j; try { j = JSON.parse(text); } catch { throw new Error(dataset + " HTTP " + r.status + " non-JSON " + (r.headers.get("content-type") || "") + ": " + text.replace(/\s+/g, " ").slice(0, 160)); }
     if (j && j.success === "false") throw new Error(dataset + " rejected");
     return j;
   } catch (e) { throw new Error(redact((e && e.message) || e, env.CWA_API_KEY)); }

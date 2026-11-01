@@ -96,8 +96,17 @@ export default {
       const r = await hub.fetch("https://hub/ingest", { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
       return json(cors, await r.json(), r.status);
     }
+    if (request.method === "POST" && p === "/api/cwa/ingest") {
+      // CWA's WAF ("Request Rejected") blocks Cloudflare egress IPs, so the collector (normal IP, scripts/ais-collector.mjs) fetches CWA with the owner's key
+      // and posts the NORMALISED result here. Bearer INGEST_TOKEN, same as /api/ships/ingest.
+      if (!hub || !env.INGEST_TOKEN) return json(cors, { error: "ingest not configured" }, 503);
+      const given = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+      if (!(await tokenOk(given, env.INGEST_TOKEN))) return json(cors, { error: "unauthorized" }, 401);
+      const r = await hub.fetch("https://hub/cwa-ingest", { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
+      return json(cors, await r.json(), r.status);
+    }
     if (request.method === "GET" && /^\/api\/(quakes|typhoon|warnings)$/.test(p)) {
-      if (!env.CWA_API_KEY || !hub) return json(cors, { enabled: false, source: "usgs", reason: "CWA_API_KEY not configured" }, 200, { "Cache-Control": "public, max-age=300" });
+      if (!hub || !(env.CWA_API_KEY || env.INGEST_TOKEN)) return json(cors, { enabled: false, source: "usgs", reason: "CWA_API_KEY not configured" }, 200, { "Cache-Control": "public, max-age=300" });
       const r = await hub.fetch("https://hub/cwa/" + p.slice("/api/".length)); // fetched + parsed inside the Durable Object (big JSON, 10 ms CPU on the free plan front Worker)
       return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=60" }) });
     }
@@ -144,6 +153,7 @@ export class Hub {
       if (path === "/ships") return this.shipsResponse();
       if (path === "/ingest") return this.ingest(request);
       if (path === "/cga") return this.cga();
+      if (path === "/cwa-ingest") return this.cwaIngest(request);
       if (path.startsWith("/cwa/")) return this.cwa(path.slice(5));
       if (path === "/cron") {
         const report = await this.runAlerts();
@@ -173,19 +183,39 @@ export class Hub {
   }
 
   /* ---- CWA (needs secret CWA_API_KEY; the front Worker only routes here when it is set) ---- */
+  async cwaIngest(request) {
+    let b; try { b = await request.json(); } catch { return new Response(JSON.stringify({ error: "bad json" }), { status: 400 }); }
+    const d = (b && b.cwa) || {}, now = Date.now(), got = [];
+    const lim = { quakes: ["quakes", 100], typhoon: ["typhoons", 10], warnings: ["warnings", 60] };
+    const ing = (await this.ctx.storage.get("cwaIngest")) || {};
+    for (const [kind, [field, max]] of Object.entries(lim)) {
+      const v = d[kind]; if (!v || v.source !== "cwa" || !Array.isArray(v[field])) continue;
+      ing[kind] = { at: now, body: JSON.stringify({ enabled: true, source: "cwa", attribution: String(v.attribution || "").slice(0, 80), time: now, via: "collector", [field]: v[field].slice(0, max) }) };
+      got.push(kind);
+    }
+    if (got.length) { this.cwaIng = ing; await this.ctx.storage.put("cwaIngest", ing); this.cwaCache = {}; }
+    return new Response(JSON.stringify({ ok: true, stored: got }), { headers: { "Content-Type": "application/json" } });
+  }
+
   async cwa(kind) {
     const ttl = { quakes: 60000, typhoon: 300000, warnings: 120000 }[kind];
     if (!ttl) return new Response("{}", { status: 404 });
+    const J = (b, status = 200) => new Response(b, { status, headers: { "Content-Type": "application/json" } });
+    if (!this.cwaIng) this.cwaIng = (await this.ctx.storage.get("cwaIngest")) || {};
+    const ing = this.cwaIng[kind], now = Date.now();
+    if (ing && now - ing.at < 20 * 60000) return J(ing.body); // fresh data posted by the collector
+    if (!this.env.CWA_API_KEY) return ing ? J(ing.body) : J(JSON.stringify({ enabled: false, source: "usgs", reason: "no CWA data (CWA_API_KEY not configured)" }));
     this.cwaCache = this.cwaCache || {};
-    const c = this.cwaCache[kind], now = Date.now();
-    if (c && now - c.at < ttl) return new Response(c.body, { headers: { "Content-Type": "application/json" } });
-    try {
+    const c = this.cwaCache[kind];
+    if (c && now - c.at < ttl) return J(c.body);
+    try { // direct fetch (works only from IPs CWA's WAF accepts; Cloudflare's egress IPs are currently rejected, hence the collector path above)
       const body = JSON.stringify(await cwaData(this.env, kind));
       this.cwaCache[kind] = { at: now, body };
-      return new Response(body, { headers: { "Content-Type": "application/json" } });
+      return J(body);
     } catch (e) {
-      if (c) return new Response(c.body, { headers: { "Content-Type": "application/json" } }); // serve stale on upstream failure
-      return new Response(JSON.stringify({ enabled: true, source: "cwa", error: String((e && e.message) || e).slice(0, 160) }), { status: 502, headers: { "Content-Type": "application/json" } });
+      const stale = (ing && ing.body) || (c && c.body); // stale beats nothing
+      if (stale) return J(stale);
+      return J(JSON.stringify({ enabled: true, source: "cwa", error: String((e && e.message) || e).slice(0, 200) }), 502);
     }
   }
 

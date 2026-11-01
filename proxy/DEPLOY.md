@@ -15,15 +15,17 @@ Everything stays on the **Cloudflare free plan** (no paid add-ons).
 > ```
 > Run it somewhere that stays on (home PC / Raspberry Pi / a VPS whose IP aisstream accepts). Ships stay in the Worker for 30 min after the collector stops.
 
-## Optional: Taiwan CWA quakes / typhoon / warnings (needs the owner's own key)
-Worker secret `CWA_API_KEY` (free key from <https://opendata.cwa.gov.tw/>). Absent → `GET /api/quakes|typhoon|warnings` return `{"enabled":false,"source":"usgs"}` and nothing calls CWA (the app keeps using USGS).
-Present → E-A0015-001 + E-A0016-001 (quakes), W-C0034-005 (typhoon), W-C0033-001 (warnings) are fetched inside the Hub DO (cached 60 s / 5 min / 2 min) and push quake alerts use CWA felt reports. See `docs/DATA-SOURCES.md`.
+## Taiwan CWA quakes / typhoon / warnings (needs the owner's own key) — fed by the collector
+CWA's WAF rejects Cloudflare egress IPs (HTTP 200 + HTML "Request Rejected"), so like aisstream the data goes through the collector: set `CWA_API_KEY` (free key from <https://opendata.cwa.gov.tw/>) in the collector's environment;
+it fetches E-A0015-001 + E-A0016-001 (quakes), W-C0034-005 (typhoon), W-C0033-001 (warnings) every `CWA_SEC` (300 s), normalises them and POSTs `{cwa:{…}}` to `/api/cwa/ingest` (Bearer `INGEST_TOKEN`).
+`GET /api/quakes|typhoon|warnings` serve that data (fresh for 20 min). The Worker secret `CWA_API_KEY` (optional) enables a direct-fetch fallback; with neither the secret nor ingested data the routes return `{"enabled":false,"source":"usgs"}` and the app keeps using USGS.
+Push quake alerts use CWA felt reports when CWA data is available. See `docs/DATA-SOURCES.md`.
 
 ## Second AIS source: Taiwan MPB (交通部航港局), no key
 `scripts/ais-collector.mjs` also polls `https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx` (needs `Referer: https://mpbais.motcmpb.gov.tw/aismpb/`, ~2.9 MB) every `MPB_SEC` (default 120 s, min 90 s),
 trims it to 19–28°N 116–126°E and the needed fields, and POSTs `{ships:[…]}` to `/api/ships/ingest`; the Worker merges it with aisstream by MMSI. It is done in the collector, not the Worker, because of the free plan's 10 ms CPU limit.
 The endpoint is undocumented and has no published licence — keep the polling rate low and attribute 交通部航港局.
-`AISSTREAM_API_KEY` is optional for the collector now (MPB-only mode); the ingest token is read from `INGEST_TOKEN` or `~/.config/gods-eye/ingest.token`.
+`AISSTREAM_API_KEY` is optional for the collector now (MPB / CWA-only mode); the ingest token is read from `INGEST_TOKEN` or `~/.config/gods-eye/ingest.token`.
 
 ## What you need to provide (2 things)
 

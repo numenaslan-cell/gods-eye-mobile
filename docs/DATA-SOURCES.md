@@ -35,7 +35,8 @@
 
 * 取得 key：<https://opendata.cwa.gov.tw/> 會員登入 →「取得授權碼」（免費）。設定：`wrangler secret put CWA_API_KEY`，或用 Cloudflare API `PUT /accounts/<id>/workers/scripts/gods-eye-opensky-proxy/secrets {"name":"CWA_API_KEY","text":"CWA-…","type":"secret_text"}`。**不需要重新部署程式**。
 * 授權：政府資料開放授權條款第 1 版；請標示「資料來源：交通部中央氣象署」（啟用後 UI 會顯示）。
-* CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內抓取與解析（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
+* **重要：CWA 的 WAF 會拒絕 Cloudflare 出口 IP**（從 Worker 直接呼叫回 HTTP 200 但內容是 HTML「Request Rejected」，與 aisstream 的情況類似）。所以實際資料流是：箱子上的收集器 `scripts/ais-collector.mjs`（環境變數 `CWA_API_KEY`，每 `CWA_SEC`＝300 秒）呼叫 CWA → 正規化 → `POST /api/cwa/ingest`（Bearer `INGEST_TOKEN`）→ Hub DO 儲存（20 分鐘內視為新鮮）→ `/api/quakes|typhoon|warnings`。Worker secret `CWA_API_KEY` 仍設定著，當收集器停止（資料超過 20 分鐘）時 Worker 會嘗試直接抓取（目前會被 WAF 擋，之後若 CWA 放行即自動生效），失敗則回傳舊資料。收集器停止且無資料時，前端自動退回 USGS。
+* CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內處理（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
 * 驗證狀況（2026-11-01）：四個資料集都用使用者自己的 key 對真實 API 測試過；解析以**真實回應樣本**（`proxy/test/fixtures/`，已縮減）做單元測試。注意：颱風資料集的實際 JSON 欄位是 PascalCase（`TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[]`、`CoordinateLongitude/Latitude`），警特報的 `validTime` 沒有時區（視為台北時間 +08:00）；解析器兩種大小寫都接受。
 
 ## 共軍動態日報（PLA DAILY）與海巡署新聞（CCG 海警）
