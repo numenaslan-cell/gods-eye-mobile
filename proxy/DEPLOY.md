@@ -59,6 +59,10 @@ then `wrangler secret put AISSTREAM_API_KEY` / `VAPID_PRIVATE_KEY`.)
 
 Then push the front-end commit to GitHub (Pages) — the service worker cache is `gods-eye-v2`, so clients pick up the new shell automatically.
 
+## Monitoring
+`GET /api/ships` includes `diag` (last AIS source/close reason) and `cron: {at, report}` — the cron heartbeat (`at` in ms since epoch, `report` = what the last run did, e.g. `{"subs":0}`).
+Analytics: Cloudflare GraphQL `workersInvocationsAdaptive` / `durableObjectsInvocationsAdaptiveGroups` (`scheduled` events are not exposed in the `workersInvocationsScheduled` dataset for this plan, so use the heartbeat).
+
 ## Smoke test after deploying
 ```
 curl https://gods-eye-opensky-proxy.numenaslan.workers.dev/api/push/config   # {"enabled":true,"publicKey":"B…","aisEnabled":true}

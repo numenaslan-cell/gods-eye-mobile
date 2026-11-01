@@ -101,7 +101,7 @@ export class Hub {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
     ctx.blockConcurrencyWhile(async () => {
-      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag"]); this.diag = s.get("diag") || null;
+      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron"]); this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
       this.ships = s.get("ships") || {}; this.lastCollect = s.get("lastCollect") || 0; this.lastError = s.get("lastError") || "";
       this.everCollected = this.lastCollect > 0;
     });
@@ -112,7 +112,11 @@ export class Hub {
     try {
       if (path === "/ships") return this.shipsResponse();
       if (path === "/ingest") return this.ingest(request);
-      if (path === "/cron") return new Response(JSON.stringify(await this.runAlerts()), { headers: { "Content-Type": "application/json" } });
+      if (path === "/cron") {
+        const report = await this.runAlerts();
+        this.cron = { at: Date.now(), report }; await this.ctx.storage.put("cron", this.cron); // heartbeat, visible in /api/ships -> cron
+        return new Response(JSON.stringify(report), { headers: { "Content-Type": "application/json" } });
+      }
       let body = {}; try { body = await request.json(); } catch { /* none */ }
       if (path === "/subscribe") return this.subscribe(body);
       if (path === "/unsubscribe") return this.unsubscribe(body);
@@ -140,7 +144,7 @@ export class Hub {
     if (!this.collecting && now - this.lastAttempt > STALE_MS && age > STALE_MS && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 50);
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
-    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, count: list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, count: list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
   }
 
   async collect(ms = COLLECT_MS) {
