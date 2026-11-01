@@ -3,6 +3,7 @@
  *
  *  Flights    : OpenSky Network  https://opensky-network.org/apidoc/
  *  Satellites : CelesTrak GP/TLE https://celestrak.org/  + satellite.js (SGP4)
+ *  Ships (AIS): aisstream.io, relayed by the Cloudflare Worker (the API key lives there as a secret, never in the browser)
  *
  * Exposes window.GodsEyeData = { state, subscribe(fn), start(), config }.
  * Every feed has a status: "loading" | "live" | "demo".  "demo" means generated
@@ -15,6 +16,8 @@
     openskyBase: "https://opensky-network.org/api",
     bbox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 },
     flightRefreshMs: 15000,
+    proxyBase: "",            // Worker base ("https://<worker>.workers.dev/api"): AIS ships + push alerts. "" = derive from openskyBase
+    shipRefreshMs: 30000,
     satGroup: "active",
     satRefreshMs: 5000,
     tleCacheMs: 2 * 60 * 60 * 1000,
@@ -24,12 +27,15 @@
   var qs = new URLSearchParams(location.search);
   if (qs.get("opensky")) cfg.openskyBase = qs.get("opensky").replace(/\/+$/, "");
   if (qs.get("sats")) cfg.satGroup = qs.get("sats");
+  if (qs.get("proxy")) cfg.proxyBase = qs.get("proxy").replace(/\/+$/, "");
+  if (!cfg.proxyBase && !/opensky-network\.org/.test(cfg.openskyBase)) cfg.proxyBase = cfg.openskyBase.replace(/\/+$/, "");
   var FORCE_DEMO = qs.get("demo") === "1";
 
   var R_EARTH_KM = 6371;
   var listeners = [];
   var state = {
     flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "OpenSky Network", nextTry: 0 },
+    ships: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
     sats: {
       status: "loading", total: 0, names: [], pos: new Float32Array(0), over: [], iss: null,
       updated: 0, rev: 0, error: "", source: "CelesTrak", group: cfg.satGroup, tleAgeMin: null,
@@ -128,6 +134,97 @@
       if (cfg.demoFallback) setFlights("demo", state.flights.status === "demo" && state.flights.list.length ? state.flights.list : demoFlights(), msg);
       else setFlights("demo", [], msg);
       scheduleFlights(wait);
+    });
+  }
+
+
+  /* -------------------------------------------------------------------- ships (AIS) */
+  var shipTimer = 0, shipFailures = 0;
+  var TYPE_LABELS = { 30: "FISHING", 31: "TOWING", 32: "TOWING (LARGE)", 33: "DREDGING", 34: "DIVING OPS", 35: "MILITARY", 36: "SAILING", 37: "PLEASURE CRAFT", 50: "PILOT", 51: "SEARCH & RESCUE", 52: "TUG", 53: "PORT TENDER", 54: "ANTI-POLLUTION", 55: "LAW ENFORCEMENT", 58: "MEDICAL", 59: "SPECIAL CRAFT" };
+  function shipTypeLabel(t) {
+    if (!t) return "UNKNOWN";
+    if (TYPE_LABELS[t]) return TYPE_LABELS[t];
+    if (t >= 40 && t < 50) return "HIGH-SPEED CRAFT";
+    if (t >= 60 && t < 70) return "PASSENGER";
+    if (t >= 70 && t < 80) return "CARGO";
+    if (t >= 80 && t < 90) return "TANKER";
+    return t >= 20 && t < 30 ? "WING IN GROUND" : "OTHER";
+  }
+  // marker colour class: ccg | cargo | tanker | pax | fish | other
+  function shipClass(sh) {
+    var t = sh.type || 0;
+    if (sh.ccg) return "ccg";
+    if (t >= 70 && t < 80) return "cargo";
+    if (t >= 80 && t < 90) return "tanker";
+    if (t >= 60 && t < 70) return "pax";
+    if (t === 30) return "fish";
+    return "other";
+  }
+  function mapShip(s, now) {
+    var course = s.cog != null ? s.cog : s.hdg != null ? s.hdg : 0, moving = s.sog != null && s.sog > 0.5;
+    var o = {
+      id: s.mmsi, mmsi: s.mmsi, name: s.name || ("MMSI " + s.mmsi), hasName: !!s.name,
+      lat: s.lat, lon: s.lon, sogKt: s.sog, cog: s.cog, hdg: course, vMs: moving ? s.sog * 0.514444 : 0,
+      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, t: now - (s.ageSec || 0) * 1000,
+    };
+    o.typeLabel = o.ccg ? "CCG (HEURISTIC)" : shipTypeLabel(o.type); o.cls = shipClass(o);
+    return o;
+  }
+  function parseShips(json) {
+    var now = Date.now(), out = (json.ships || []).filter(function (s) { return s && s.lat != null && s.lon != null && s.mmsi; }).map(function (s) { return mapShip(s, now); });
+    out.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+    return out;
+  }
+  // Demo ships follow real shipping lanes around Taiwan (kept at sea, never on the island). Clearly labelled DEMO.
+  var LANES = [ // [lat0, lon0, lat1, lon1]
+    [21.9, 119.7, 25.6, 119.9], [25.7, 119.95, 22.0, 119.55], [22.3, 122.4, 25.9, 122.6], [25.9, 122.7, 22.4, 122.2],
+    [21.6, 118.6, 21.8, 122.8], [25.95, 120.6, 25.8, 123.4], [22.6, 120.0, 22.2, 118.8],
+  ];
+  function demoShips() {
+    var now = Date.now(), list = [], names = ["DEMO CARGO", "DEMO TANKER", "DEMO FERRY", "DEMO FISHER", "DEMO CARGO", "DEMO TUG"], types = [71, 81, 61, 30, 72, 52];
+    for (var i = 0; i < 46; i++) {
+      var ln = LANES[i % LANES.length], f = Math.random(), kn = i % 6 === 3 ? rnd(2, 5) : rnd(8, 19), rev = i % 2 === 1;
+      var lat = ln[0] + (ln[2] - ln[0]) * f + rnd(-0.12, 0.12), lon = ln[1] + (ln[3] - ln[1]) * f + rnd(-0.12, 0.12);
+      var brg = Math.atan2((ln[3] - ln[1]) * Math.cos(lat * Math.PI / 180), ln[2] - ln[0]) * 180 / Math.PI;
+      brg = (brg + (rev ? 180 : 0) + 360) % 360;
+      list.push(mapShip({ mmsi: String(900000000 + i), name: names[i % 6] + " " + (i + 1), lat: lat, lon: lon, sog: kn, cog: brg, type: types[i % 6], dest: ["KAOHSIUNG", "KEELUNG", "TAICHUNG", "HONG KONG", "BUSAN", "SHANGHAI"][i % 6], ageSec: 0 }, now));
+    }
+    list.sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+    return list;
+  }
+  function setShips(status, list, error, note) {
+    var s = state.ships;
+    s.status = status; s.list = list; s.count = list.length; s.updated = Date.now(); s.rev++; s.error = error || ""; s.note = note || "";
+    emit("ships");
+  }
+  function scheduleShips(ms) {
+    clearTimeout(shipTimer);
+    state.ships.nextTry = Date.now() + ms;
+    shipTimer = setTimeout(pollShips, ms);
+  }
+  function shipsToDemo(msg, wait) {
+    shipFailures++;
+    if (cfg.demoFallback) setShips("demo", state.ships.status === "demo" && state.ships.list.length ? state.ships.list : demoShips(), msg);
+    else setShips("demo", [], msg);
+    scheduleShips(wait || Math.min(60000 * Math.pow(2, shipFailures - 1), 600000));
+  }
+  function pollShips() {
+    if (document.hidden) { scheduleShips(cfg.shipRefreshMs); return; }
+    if (!cfg.proxyBase) { shipsToDemo("AIS proxy not configured", 600000); return; }
+    fetchTimeout(cfg.proxyBase + "/ships", 15000, { cache: "no-store" }).then(function (res) {
+      if (res.status === 503) throw new Error("AIS feed not configured on the Worker yet");
+      if (res.status === 404) throw new Error("AIS endpoint not deployed yet");
+      return res.json().then(function (j) { if (!res.ok) throw new Error(j && j.error ? "AIS: " + j.error : "HTTP " + res.status); return j; });
+    }).then(function (j) {
+      shipFailures = 0;
+      if (j.warming) { setShips("loading", [], "", "AIS relay warming up…"); scheduleShips(20000); return; }
+      var list = parseShips(j);
+      setShips("live", list, "", j.error ? "stale: " + j.error : (j.ageSec != null ? "feed " + j.ageSec + "s old" : ""));
+      scheduleShips(cfg.shipRefreshMs);
+    }).catch(function (err) {
+      var msg = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err);
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) msg = "network / CORS blocked";
+      shipsToDemo(msg);
     });
   }
 
@@ -287,13 +384,19 @@
   var started = false;
   function start() {
     if (started) return; started = true;
-    if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); }
-    else pollFlights();
+    if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); setShips("demo", demoShips(), "demo mode (?demo=1)"); }
+    else { pollFlights(); pollShips(); }
     startSats();
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.flights.nextTry - 1000) pollFlights();
+      if (!document.hidden && !FORCE_DEMO && Date.now() >= state.ships.nextTry - 1000) pollShips();
     });
   }
 
-  window.GodsEyeData = { state: state, subscribe: subscribe, start: start, config: cfg, R_EARTH_KM: R_EARTH_KM };
+  // TLE entries [[name, line1, line2], ...] for a CelesTrak group (localStorage-cached 2 h, shared with the satellite layer).
+  function loadTleEntries(group) {
+    return loadTle(group).then(function (r) { return { entries: parseTle(r.text), ageMin: r.ageMin, stale: !!r.stale }; });
+  }
+
+  window.GodsEyeData = { state: state, subscribe: subscribe, start: start, config: cfg, R_EARTH_KM: R_EARTH_KM, loadTleEntries: loadTleEntries, shipTypeLabel: shipTypeLabel };
 })();

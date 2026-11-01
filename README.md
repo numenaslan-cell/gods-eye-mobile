@@ -14,7 +14,10 @@
 * 🌐 3D 地球（three.js）：日間 / 夜視 (NVG) / 熱像 (THERM) 三種顯示模式，晝夜交界線依「現在時間」計算
 * ✈️ **台灣周邊真實航班**（OpenSky，範圍 21.5–26.5°N、119–123°E）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
 * 🛰️ **真實衛星**（CelesTrak TLE + satellite.js SGP4）：顯示衛星總數、**台灣上空的衛星清單**、ISS 即時位置（可一鍵追蹤）
-* 🔎 搜尋：輸入呼號（如 `CAL`）、衛星名稱（如 `STARLINK`、`ISS`）或座標（`25.03,121.56`）
+* 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料由自己的 Cloudflare Worker 向 aisstream.io 取得（API key 只存在 Worker secret），沒有 key 或失敗時顯示 **DEMO DATA**
+* 🛰️ **過境預測 (Passes)**：用瀏覽器定位（預設台北，也可手動輸入經緯度）預測未來 72 小時 ISS、天宮 (CSS) 與數顆亮星（HST、AJISAI、TERRA、AQUA、ENVISAT、ALOS）的過境：起／峰／止時間、最高仰角、起訖方位、是否「可能看得到」（衛星受日照且天色夠暗）；「LOOK HERE」羅盤會指出現在該看的方位與仰角，可選用手機羅盤；頁面開著時可在過境前 5 分鐘通知
+* 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（USGS）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關。需先部署 Worker（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）；iOS 16.4+ 須先加入主畫面
+* 🔎 搜尋：輸入呼號（如 `CAL`）、船名或 9 位 MMSI、衛星名稱（如 `STARLINK`、`ISS`）或座標（`25.03,121.56`）
 * 📍 快速定位：台北101、桃園機場、台灣上空
 * 📱 手機優先：375–430 px 直式不會橫向捲動、所有按鈕 ≥ 44 px、HUD 面板可收合（手機上一次只展開一個）、支援瀏海／Home 指示條 safe-area
 * 📲 PWA：`manifest.json`、`theme-color`、`apple-mobile-web-app-*`、圖示，可「加入主畫面」；Service Worker 只快取靜態檔，資料 API 一律走網路
@@ -66,7 +69,10 @@ assets/textures/        NASA Blue Marble / Black Marble 貼圖
 assets/vendor/          satellite.js 6.0.2（MIT）
 src/vendor.js           從原 artifact 抽出的 React / three.js / lucide 壓縮碼
 src/app.js              可讀的應用程式原始碼（已重寫）
-proxy/                  選用的 OpenSky CORS 代理（Cloudflare Worker）
+proxy/                  Cloudflare Worker：OpenSky CORS 代理、AIS 船舶中繼、Web Push（src/ 原始碼、dist/ 部署檔、DEPLOY.md）
+assets/passes.js        衛星過境預測核心（瀏覽器與 Worker 共用）
+assets/push.js          Web Push 前端
+scripts/gen-vapid.mjs   產生 VAPID 金鑰
 ```
 
 修改 `src/app.js` 後執行 `node build.mjs`（無需 npm 套件）重新產生 `assets/app.bundle.js`。

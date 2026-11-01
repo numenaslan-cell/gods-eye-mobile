@@ -1,4 +1,7 @@
 /**
+ * (Minimal version — OpenSky proxy only, no bindings needed. The full Worker with AIS ships + Web Push alerts is
+ * proxy/src/worker.mjs, deployed from proxy/dist/worker.js; see proxy/DEPLOY.md.)
+ *
  * Optional tiny CORS proxy for the OpenSky Network REST API (Cloudflare Worker, free tier is enough).
  *
  * The public OpenSky endpoint does not reliably send `Access-Control-Allow-Origin` for third-party

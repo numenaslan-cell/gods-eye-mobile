@@ -135,4 +135,43 @@ small { font-size: 9px; }
   .ge-search { max-width: 560px; padding: 2px 12px 6px; }
   .ge-search-ico { left: 22px; }
 }
+
+/* ---- tabbed dock (flights / ships / sats / passes / alerts) ---- */
+.ge-tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid rgba(200,255,0,.2); flex: 0 0 auto; }
+.ge-tab { min-height: 48px; min-width: 0; padding: 4px 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border-right: 1px solid rgba(255,255,255,.07); color: rgba(255,255,255,.75); font-size: 9.5px; letter-spacing: .06em; }
+.ge-tab:last-child { border-right: 0; }
+.ge-tab b { font-size: 9.5px; letter-spacing: .04em; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ge-tab small { font-size: 10px; color: rgba(255,255,255,.55); }
+.ge-tab.is-on { background: var(--lime); color: #000; } .ge-tab.is-on small { color: rgba(0,0,0,.7); }
+.ge-tab:focus-visible { outline: 2px solid var(--lime); outline-offset: -2px; }
+.ge-panel-body { max-height: min(46vh, 380px); }
+.ge-two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ge-two .ge-btn { width: 100%; font-size: 10px; padding: 0 6px; } .ge-btn:disabled { opacity: .4; cursor: default; }
+.ge-ccg { color: #fff; background: rgba(255,59,48,.85) !important; border-color: var(--red); font-weight: 700; }
+.ge-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 9px; letter-spacing: .06em; color: rgba(255,255,255,.65); }
+.ge-legend span { display: inline-flex; align-items: center; gap: 4px; } .ge-legend i { width: 8px; height: 8px; display: inline-block; clip-path: polygon(50% 0, 100% 35%, 100% 100%, 0 100%, 0 35%); }
+.ge-reticle-ship i { border-color: var(--cyan); }
+.ge-manual { padding: 0; } .ge-manual input { padding-left: 10px; }
+
+/* passes + look-here dial */
+.ge-passes { max-height: 168px; }
+.ge-pass { align-items: center; gap: 6px; padding: 4px 0; }
+.ge-pass.is-on { background: rgba(200,255,0,.12); outline: 1px solid rgba(200,255,0,.5); outline-offset: -1px; }
+.ge-pass-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; white-space: normal !important; font-size: 11px; }
+.ge-pass-main small { color: rgba(255,255,255,.55); font-size: 9px; }
+.ge-pass em { font-style: normal; font-size: 9px; letter-spacing: .05em; padding: 2px 5px; border: 1px solid; white-space: nowrap; flex: 0 0 auto; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+.ge-vis { color: #000; background: var(--green); border-color: var(--green); font-weight: 700; }
+.ge-novis { color: rgba(255,255,255,.55); border-color: rgba(255,255,255,.25); }
+.ge-look { display: grid; grid-template-columns: 72px 1fr auto; gap: 4px 10px; align-items: center; padding: 8px; border: 1px solid rgba(200,255,0,.35); background: rgba(200,255,0,.05); }
+.ge-dial { position: relative; width: 72px; height: 72px; border-radius: 50%; border: 1px solid rgba(255,255,255,.3); background: radial-gradient(circle, rgba(0,0,0,.4) 0 55%, transparent 56%), repeating-conic-gradient(rgba(255,255,255,.25) 0 1deg, transparent 1deg 45deg); }
+.ge-dial-n { position: absolute; inset: 0; font-style: normal; font-size: 10px; font-weight: 700; color: var(--red); text-align: center; line-height: 1; padding-top: 3px; transform-origin: 50% 50%; }
+.ge-dial-arrow { position: absolute; left: 50%; top: 50%; width: 0; height: 0; margin: -26px 0 0 -6px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 26px solid var(--lime); transform-origin: 6px 26px; }
+.ge-dial-arrow.is-below { border-bottom-color: rgba(255,255,255,.3); }
+.ge-look-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 11px; } .ge-look-txt b { font-size: 15px; letter-spacing: .08em; } .ge-look-txt small { color: rgba(255,255,255,.55); }
+.ge-look-btns { display: flex; flex-direction: column; gap: 4px; } .ge-look-btns .ge-btn { padding: 0 8px; font-size: 9px; }
+@media (max-height: 700px) { .ge-panel-body { max-height: 34vh; } .ge-passes { max-height: 120px; } }
+@media (min-width: 700px) { .ge-panel-body { max-height: 52vh; } }
+
 @media (prefers-reduced-motion: reduce) { .ge-dot { animation: none; } }
+ .ge-pick-mid .ge-hint { white-space: normal; line-height: 1.4; }
+.ge-panel-body > * { flex-shrink: 0; }

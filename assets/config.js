@@ -11,6 +11,12 @@ window.GODS_EYE_CONFIG = {
   // point this at your own tiny proxy (see proxy/cloudflare-worker.js and README).
   openskyBase: "https://gods-eye-opensky-proxy.numenaslan.workers.dev/api",
 
+  // Base URL of the Cloudflare Worker that also relays AIS ships (aisstream.io) and stores Web Push
+  // subscriptions. "" = same as openskyBase when that points at a Worker. Until the Worker has the AIS key /
+  // new routes deployed, ships simply show as DEMO DATA and the Alerts tab says push is not configured.
+  proxyBase: "",
+  shipRefreshMs: 30000,
+
   // Bounding box around Taiwan (degrees).
   bbox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 },
 

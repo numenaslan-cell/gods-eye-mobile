@@ -1,0 +1,12 @@
+{
+  "main_module": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "bindings": [
+    { "type": "durable_object_namespace", "name": "HUB", "class_name": "Hub" },
+    { "type": "kv_namespace", "name": "SUBS", "namespace_id": "<KV_NAMESPACE_ID>" },
+    { "type": "plain_text", "name": "VAPID_PUBLIC_KEY", "text": "<VAPID_PUBLIC_KEY>" },
+    { "type": "plain_text", "name": "VAPID_SUBJECT", "text": "mailto:<your email>" }
+  ],
+  "migrations": { "new_tag": "v1", "new_sqlite_classes": ["Hub"] },
+  "keep_bindings": ["secret_text"]
+}
