@@ -6,6 +6,7 @@
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
  *   GET  /api/quakes | /api/typhoon | /api/warnings   CWA open data (secret CWA_API_KEY); {enabled:false} -> client falls back to USGS
+ *   GET  /api/cga          CGA (海巡署) RSS items mentioning 海警, parsed in the Hub DO, cached 30 min
  *   POST /api/push/subscribe | /unsubscribe | /test   Web Push subscriptions (stored in KV)
  *   cron (every 2 min)     M4.5+ quakes near Taiwan, China Coast Guard vessel in AIS, upcoming ISS pass -> Web Push
  *
@@ -20,6 +21,7 @@ import { applyAis, applyMpb, trimShips, publicShips, isCcg, AIS_BBOX, AIS_TYPES 
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
 import { cwaData } from "./cwa.mjs";
+import { fetchCga } from "./cga.mjs";
 
 const UPSTREAM = "https://opensky-network.org/api";
 const SITE = "https://numenaslan-cell.github.io/gods-eye-mobile/";
@@ -99,6 +101,11 @@ export default {
       const r = await hub.fetch("https://hub/cwa/" + p.slice("/api/".length)); // fetched + parsed inside the Durable Object (big JSON, 10 ms CPU on the free plan front Worker)
       return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=60" }) });
     }
+    if (request.method === "GET" && p === "/api/cga") {
+      if (!hub) return json(cors, { error: "not configured" }, 503);
+      const r = await hub.fetch("https://hub/cga");
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=300" }) });
+    }
     if (request.method === "GET" && p === "/api/push/config") {
       return json(cors, { enabled: !!(env.SUBS && hub && env.VAPID_PRIVATE_KEY && env.VAPID_PUBLIC_KEY), publicKey: env.VAPID_PUBLIC_KEY || null, aisEnabled: !!(env.AISSTREAM_API_KEY || env.INGEST_TOKEN), cwaEnabled: !!env.CWA_API_KEY }, 200, { "Cache-Control": "public, max-age=300" });
     }
@@ -136,6 +143,7 @@ export class Hub {
     try {
       if (path === "/ships") return this.shipsResponse();
       if (path === "/ingest") return this.ingest(request);
+      if (path === "/cga") return this.cga();
       if (path.startsWith("/cwa/")) return this.cwa(path.slice(5));
       if (path === "/cron") {
         const report = await this.runAlerts();
@@ -150,6 +158,19 @@ export class Hub {
     return new Response("{}", { status: 404 });
   }
 
+
+  /* ---- CGA RSS (30 min cache, stale on failure) ---- */
+  async cga() {
+    const c = this.cgaCache, now = Date.now(), ok = (b) => new Response(b, { headers: { "Content-Type": "application/json" } });
+    if (c && now - c.at < 1800000) return ok(c.body);
+    try {
+      const body = JSON.stringify(await fetchCga(fetch, this.env.CGA_URL || undefined));
+      this.cgaCache = { at: now, body }; return ok(body);
+    } catch (e) {
+      if (c) return ok(c.body);
+      return new Response(JSON.stringify({ error: String((e && e.message) || e).slice(0, 160) }), { status: 502, headers: { "Content-Type": "application/json" } });
+    }
+  }
 
   /* ---- CWA (needs secret CWA_API_KEY; the front Worker only routes here when it is set) ---- */
   async cwa(kind) {

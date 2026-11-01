@@ -17,6 +17,7 @@
 * 🌏 **地震圖層 + QUAKES 面板**：USGS 台灣周邊近 30 天 M3.0+ 地震，依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點，點選會飛到震央
 * 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料來源為 aisstream.io 與交通部航港局（MPB）臺灣海域 AIS，由收集器低頻率取得並經自己的 Cloudflare Worker 以 MMSI 合併（API key 只存在 Worker secret）；CCG 標記為名稱／船型啟發式（排除漁船型別 30 的純 MMSI 前綴比對），沒有 key 或失敗時顯示 **DEMO DATA**
 * 🛰️ **過境預測 (Passes)**：用瀏覽器定位（預設台北，也可手動輸入經緯度）預測未來 72 小時 ISS、天宮 (CSS) 與數顆亮星（HST、AJISAI、TERRA、AQUA、ENVISAT、ALOS）的過境：起／峰／止時間、最高仰角、起訖方位、是否「可能看得到」（衛星受日照且天色夠暗）；「LOOK HERE」羅盤會指出現在該看的方位與仰角，可選用手機羅盤；頁面開著時可在過境前 5 分鐘通知
+* 🛡️ **PLA 分頁**：最新一天共機架次／逾越中線／共艦數、近 7 日長條圖與趨勢（第三方整理自國防部日報）＋ 海巡署新聞中提到「海警」的項目（Worker `/api/cga`，30 分鐘快取）
 * 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（USGS）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關。需先部署 Worker（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）；iOS 16.4+ 須先加入主畫面
 * 🔎 搜尋：輸入呼號（如 `CAL`）、船名或 9 位 MMSI、衛星名稱（如 `STARLINK`、`ISS`）或座標（`25.03,121.56`）
 * 📍 快速定位：台北101、桃園機場、台灣上空
@@ -85,6 +86,7 @@ scripts/gen-vapid.mjs   產生 VAPID 金鑰
 ## 致謝 / Credits
 
 * 地震／颱風／警特報（選用）：[交通部中央氣象署開放資料](https://opendata.cwa.gov.tw/)——需要你自己的 API key（Worker secret `CWA_API_KEY`），未設定時自動使用 USGS；政府資料開放授權條款第 1 版
+* 共軍動態日報：[pla-tracker.skyfaring.net](https://pla-tracker.skyfaring.net)（第三方整理，資料源自國防部每日公布，非官方）；海警相關新聞：[海洋委員會海巡署](https://www.cga.gov.tw) 新聞 RSS（僅限非商業使用）
 * 船舶資料：[aisstream.io](https://aisstream.io) ＋ [交通部航港局](https://mpbais.motcmpb.gov.tw/aismpb/)「臺灣海域船舶即時資訊系統」（未公開文件的端點、無公開授權條款；僅低頻率輪詢，僅供展示用途）
 * 航班資料：[adsb.lol](https://adsb.lol)（© adsb.lol contributors，ODbL 1.0）、[adsb.fi](https://adsb.fi) Open Data（僅限非商業）、[OpenSky Network](https://opensky-network.org)（Schäfer et al., IPSN 2014）
 * 衛星軌道資料：[CelesTrak](https://celestrak.org)（Dr. T.S. Kelso）

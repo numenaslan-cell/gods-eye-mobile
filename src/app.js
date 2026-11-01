@@ -919,6 +919,37 @@
       return bits;
     }
 
+
+    function plaBody() {
+      var pla = Data.state.pla, cga = Data.state.cga, bits = [];
+      if (pla.status === "loading") bits.push(h("p", { key: "pl", className: "ge-note" }, "Loading PLA daily counts…"));
+      if (pla.status === "error") bits.push(h("p", { key: "pe", className: "ge-note ge-warn" }, "PLA daily data unavailable (" + (pla.error || "?") + "). Retrying…"));
+      if (pla.latest) {
+        var L = pla.latest, max = Math.max.apply(null, pla.days.map(function (d) { return d.aircraft; }).concat([1]));
+        var tr = pla.prev7 != null && pla.prev7 > 0 ? Math.round((pla.avg7 - pla.prev7) / pla.prev7 * 100) : null;
+        bits.push(h("div", { key: "pd", className: "ge-pla-date" }, h("b", null, "PLA DAILY"), h("small", null, "MND report · " + L.date)));
+        bits.push(h("dl", { key: "pn", className: "ge-grid ge-pla-nums" },
+          [["AIRCRAFT", fmtN(L.aircraft)], ["LINE CROSS", fmtN(L.cross)], ["SHIPS", fmtN(L.ships)]].map(function (kv) { return row(kv[0], kv[1]); })));
+        bits.push(h("div", { key: "sp", className: "ge-spark", role: "img", "aria-label": "Aircraft per day, last 7 days: " + pla.days.map(function (d) { return d.aircraft; }).join(", ") },
+          pla.days.map(function (d) {
+            return h("span", { key: d.date, className: "ge-spark-col" }, h("i", { style: { height: Math.max(4, Math.round(d.aircraft / max * 100)) + "%" } }), h("em", null, d.aircraft), h("small", null, d.date.slice(5).replace("-", "/")));
+          })));
+        bits.push(h("p", { key: "tr", className: "ge-note" }, "7-DAY AVG " + pla.avg7.toFixed(1) + " AIRCRAFT / " + pla.shipsAvg7.toFixed(1) + " SHIPS" + (tr != null ? " · " : ""),
+          tr != null ? h("b", { className: tr > 0 ? "ge-amber" : "ge-lime" }, (tr > 0 ? "▲ +" : tr < 0 ? "▼ " : "► ") + tr + "% vs PRIOR 7 DAYS") : null));
+        if (L.event) bits.push(h("p", { key: "ev", className: "ge-note" }, L.event.slice(0, 120)));
+      }
+      bits.push(h("p", { key: "ps", className: "ge-src" }, "Third-party compilation (pla-tracker.skyfaring.net) of Taiwan MND 國防部 daily reports — unofficial, may lag or contain errors; not a warning. Counts are PLA aircraft / ships reported around Taiwan."));
+      bits.push(h("div", { key: "cg", className: "ge-pla-date ge-pla-sep" }, h("b", null, "CCG 海警 · CGA RELEASES"), h("small", null, cga.scanned ? "latest " + cga.scanned + " items" : "")));
+      if (cga.status === "loading") bits.push(h("p", { key: "cl", className: "ge-note" }, "Loading 海巡署 RSS…"));
+      if (cga.status === "error") bits.push(h("p", { key: "ce", className: "ge-note ge-warn" }, "CGA RSS unavailable (" + (cga.error || "?") + ")."));
+      if (cga.status === "live") bits.push(cga.items.length ? h("ul", { key: "cu", className: "ge-list ge-passes ge-cga" }, cga.items.map(function (it, i) {
+        return h("li", { key: i }, h("a", { className: "ge-li ge-pass", href: it.link || "https://www.cga.gov.tw/", target: "_blank", rel: "noopener noreferrer" },
+          h("span", { className: "ge-pass-main" }, h("b", null, it.title), h("small", null, (it.t ? new Date(it.t).toISOString().slice(0, 10) : "") + (it.kind === "mention" ? " · mentions 海警: …" + it.snippet + "…" : " · title match"))), h("span", { "aria-hidden": true }, "↗")));
+      })) : h("p", { key: "cn", className: "ge-note" }, "No 海巡署 press release among the latest " + cga.scanned + " mentions 海警."));
+      bits.push(h("p", { key: "cs", className: "ge-src" }, "海洋委員會海巡署 (CGA) news RSS, titles / text containing 海警 — non-commercial use, © CGA. Not a live vessel feed (see SHIPS for the AIS CCG heuristic)."));
+      return bits;
+    }
+
     function satsBody() {
       return [
         sats.status === "demo" && h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — CelesTrak unreachable (" + (sats.error || "?") + ")."),
@@ -1040,6 +1071,7 @@
       { id: "hud", label: "FLIGHTS", sum: fmtN(flights.count), body: flightsBody },
       { id: "ships", label: "SHIPS", sum: fmtN(ships.count), body: shipsBody },
       { id: "quakes", label: "QUAKES", sum: fmtN(quakes.count), body: quakesBody },
+      { id: "pla", label: "PLA", sum: Data.state.pla.latest ? String(Data.state.pla.latest.aircraft) : "—", body: plaBody },
       { id: "sats", label: "SATS", sum: String(over.length), body: satsBody },
       { id: "passes", label: "PASSES", sum: (function () { var n = passes.list.find(function (p) { return p.end > Date.now(); }); return n ? hm(n.start) : "—"; })(), body: passesBody },
       { id: "alerts", label: "ALERTS", sum: pushInfo && pushInfo.subscribed ? "ON" : "OFF", body: alertsBody },
@@ -1112,6 +1144,8 @@
           h("a", { href: "https://opensky-network.org", target: "_blank", rel: "noopener noreferrer" }, "OpenSky"), " · ",
           h("a", { href: "https://aisstream.io", target: "_blank", rel: "noopener noreferrer" }, "aisstream.io"), " · ",
           h("a", { href: "https://mpbais.motcmpb.gov.tw/aismpb/", target: "_blank", rel: "noopener noreferrer" }, "交通部航港局 MPB"), " · ",
+          h("a", { href: "https://pla-tracker.skyfaring.net", target: "_blank", rel: "noopener noreferrer" }, "PLA tracker (MND)"), " · ",
+          h("a", { href: "https://www.cga.gov.tw", target: "_blank", rel: "noopener noreferrer" }, "海巡署 CGA"), " · ",
           h("a", { href: "https://celestrak.org", target: "_blank", rel: "noopener noreferrer" }, "CelesTrak"), " · ",
           h("a", { href: "https://earthquake.usgs.gov", target: "_blank", rel: "noopener noreferrer" }, "USGS"), " · ",
           h("a", { href: "https://github.com/shashwatak/satellite-js", target: "_blank", rel: "noopener noreferrer" }, "satellite.js"),

@@ -38,6 +38,13 @@
 * CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內抓取與解析（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
 * 驗證狀況（2026-11-01）：四個資料集都用使用者自己的 key 對真實 API 測試過；解析以**真實回應樣本**（`proxy/test/fixtures/`，已縮減）做單元測試。注意：颱風資料集的實際 JSON 欄位是 PascalCase（`TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[]`、`CoordinateLongitude/Latitude`），警特報的 `validTime` 沒有時區（視為台北時間 +08:00）；解析器兩種大小寫都接受。
 
+## 共軍動態日報（PLA DAILY）與海巡署新聞（CCG 海警）
+
+| 來源 | 用法 | 條款 / 注意 |
+|---|---|---|
+| **pla-tracker.skyfaring.net** `https://pla-tracker.skyfaring.net/data/records.csv`（**第三方**整理，原始資料來自**國防部**每日「共機、共艦動態」公布） | 前端直接 `fetch`（回應有 `access-control-allow-origin: *`，約 20 KB，快取 4 小時）。欄位：`date, aircraft_total, median_line_cross, cross_rate, aircraft_type, ships_total, activity_start, activity_end, special_event`（`special_event` 含多行引號文字，所以用完整的 CSV 解析器）。PLA DAILY 面板顯示最新一天的架次／逾越中線／艦艇數、近 7 日長條圖與「近 7 日平均 vs 前 7 日」趨勢；2 小時更新一次 | **非官方**、可能延遲或有誤，來源網站未見明確授權條款；面板與頁尾標示出處與「第三方整理，資料源自國防部」。不是預警 |
+| **海洋委員會海巡署（CGA）新聞 RSS** `https://www.cga.gov.tw/GipOpen/wSite/rss?ctNode=2116&mp=9997` | Worker `GET /api/cga`：在 Durable Object 內抓取（約 240 KB、65 則）並以字串解析，30 分鐘快取（失敗時回傳舊資料），只保留**標題含「海警」**的項目，另外把**內文提到「海警」**的項目標示為 `mention` 附在後面（實測 2026-11-01：65 則裡沒有任何標題含「海警」，4 則內文提到，所以只看標題清單會一直是空的） | 版權屬海洋委員會海巡署（RSS 內標示「版權來自：海洋委員會海巡署」），**僅限非商業使用**、須標示出處；連結只允許 `cga.gov.tw`。這是新聞稿，不是即時船位；即時船位請看 SHIPS 的 AIS CCG 啟發式 |
+
 ## 船舶 AIS、推播與過境預測的資料來源 / Ships (AIS), push alerts & pass predictions
 
 調查日期 / Researched: 2026-11-01（Asia/Taipei）。

@@ -38,6 +38,9 @@
     ships: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
     quakes: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "USGS", nextTry: 0 },
     // Taiwan CWA (交通部中央氣象署) extras: only populated when the Worker has the owner's CWA_API_KEY secret (GET /quakes says enabled:true); otherwise USGS only
+    // PLA daily activity (third-party CSV built from Taiwan MND daily reports) and CGA (海巡署) RSS items about the China Coast Guard (海警)
+    pla: { status: "loading", error: "", latest: null, days: [], avg7: null, prev7: null, updated: 0, rev: 0, source: "pla-tracker.skyfaring.net" },
+    cga: { status: "loading", error: "", items: [], scanned: 0, updated: 0, rev: 0, source: "海巡署 CGA RSS" },
     cwa: { enabled: false, checked: 0, typhoons: [], warnings: [], updated: 0 },
     sats: {
       status: "loading", total: 0, names: [], pos: new Float32Array(0), over: [], iss: null,
@@ -486,12 +489,65 @@
     })(0);
   }
 
+
+  /* ------------------------------------------------- PLA daily stats (third-party CSV, CORS *) + CGA RSS (via Worker) */
+  var PLA_CSV = "https://pla-tracker.skyfaring.net/data/records.csv";
+  function parseCsv(text) { // RFC 4180-ish: quoted fields may contain commas, doubled quotes and newlines
+    var rows = [], row = [], f = "", q = false, i = 0, c;
+    text = String(text || "").replace(/^\uFEFF/, "");
+    for (; i < text.length; i++) {
+      c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+      else if (c === '"') q = true;
+      else if (c === ",") { row.push(f); f = ""; }
+      else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); f = ""; if (row.length > 1 || row[0] !== "") rows.push(row); row = []; }
+      else f += c;
+    }
+    if (f !== "" || row.length) { row.push(f); rows.push(row); }
+    if (!rows.length) return [];
+    var head = rows[0].map(function (x) { return x.trim(); });
+    return rows.slice(1).map(function (r) { var o = {}; head.forEach(function (k, j) { o[k] = r[j] != null ? r[j] : ""; }); return o; });
+  }
+  function plaStats(rows) {
+    var n = function (v) { var x = parseFloat(v); return isFinite(x) ? x : null; };
+    var days = rows.filter(function (r) { return /^\d{4}-\d{2}-\d{2}$/.test(r.date) && n(r.aircraft_total) != null; })
+      .map(function (r) { return { date: r.date, aircraft: n(r.aircraft_total), cross: n(r.median_line_cross), ships: n(r.ships_total), event: (r.special_event || "").replace(/\s+/g, " ").trim() }; })
+      .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    if (!days.length) return null;
+    var avg = function (a) { return a.length ? a.reduce(function (s, d) { return s + d.aircraft; }, 0) / a.length : null; };
+    var last7 = days.slice(-7), prev7 = days.slice(-14, -7);
+    return { latest: days[days.length - 1], days: last7, avg7: avg(last7), prev7: prev7.length === 7 ? avg(prev7) : null, shipsAvg7: last7.reduce(function (s, d) { return s + (d.ships || 0); }, 0) / last7.length };
+  }
+  function pollPla() {
+    var p = state.pla;
+    fetchTimeout(PLA_CSV, 15000).then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); }).then(function (t) {
+      var st = plaStats(parseCsv(t)); if (!st) throw new Error("no rows");
+      p.status = "live"; p.error = ""; p.latest = st.latest; p.days = st.days; p.avg7 = st.avg7; p.prev7 = st.prev7; p.shipsAvg7 = st.shipsAvg7; p.updated = Date.now(); p.rev++; emit("pla");
+      setTimeout(pollPla, 2 * 3600000);
+    }).catch(function (err) {
+      p.status = p.latest ? "live" : "error"; p.error = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err); p.rev++; emit("pla");
+      setTimeout(pollPla, 10 * 60000);
+    });
+  }
+  function pollCga() {
+    var c = state.cga;
+    if (!cfg.proxyBase) { c.status = "error"; c.error = "Worker not configured"; c.rev++; emit("cga"); return; }
+    fetchTimeout(cfg.proxyBase + "/cga", 15000, { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status === 404 ? "route not deployed yet" : "HTTP " + r.status); return r.json(); }).then(function (j) {
+      c.status = "live"; c.error = ""; c.items = j.items || []; c.scanned = j.scanned || 0; c.updated = Date.now(); c.rev++; emit("cga");
+      setTimeout(pollCga, 30 * 60000);
+    }).catch(function (err) {
+      c.status = c.items.length ? "live" : "error"; c.error = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err); c.rev++; emit("cga");
+      setTimeout(pollCga, 10 * 60000);
+    });
+  }
+
   /* -------------------------------------------------------------------- start */
   var started = false;
   function start() {
     if (started) return; started = true;
     if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); setShips("demo", demoShips(), "demo mode (?demo=1)"); setQuakes("demo", demoQuakes(), "demo mode (?demo=1)"); }
     else { pollFlights(); pollShips(); pollQuakes(); }
+    pollPla(); pollCga();
     startSats();
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.flights.nextTry - 1000) pollFlights();
@@ -505,5 +561,5 @@
     return loadTle(group).then(function (r) { return { entries: parseTle(r.text), ageMin: r.ageMin, stale: !!r.stale }; });
   }
 
-  window.GodsEyeData = { state: state, subscribe: subscribe, start: start, config: cfg, R_EARTH_KM: R_EARTH_KM, loadTleEntries: loadTleEntries, shipTypeLabel: shipTypeLabel };
+  window.GodsEyeData = { _test: { parseCsv: parseCsv, plaStats: plaStats }, state: state, subscribe: subscribe, start: start, config: cfg, R_EARTH_KM: R_EARTH_KM, loadTleEntries: loadTleEntries, shipTypeLabel: shipTypeLabel };
 })();
