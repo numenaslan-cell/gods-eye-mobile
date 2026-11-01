@@ -4824,7 +4824,16 @@ void main() {
       if (selQ) bits.push(h("div", { key: "sel", className: "ge-quake-sel" },
         h("b", { style: { color: quakeCss(selQ.mag) } }, "M" + selQ.mag.toFixed(1) + " · " + selQ.place),
         h("small", null, new Date(selQ.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " (local) · " + quakeAgo(selQ.t) + " · depth " + (selQ.depthKm != null ? Math.round(selQ.depthKm) + " km" : "--") + " · " + fmtLL(selQ.lat, selQ.lon)),
-        selQ.url && !selQ.demo ? h("a", { href: selQ.url, target: "_blank", rel: "noopener noreferrer" }, "USGS EVENT PAGE ↗") : null));
+        selQ.url && !selQ.demo ? h("a", { href: selQ.url, target: "_blank", rel: "noopener noreferrer" }, selQ.src === "CWA" ? "CWA 地震報告 ↗" : "USGS EVENT PAGE ↗") : null));
+      var cwa = Data.state.cwa;
+      if (cwa && cwa.enabled) {
+        cwa.warnings.slice(0, 6).forEach(function (w, i) {
+          bits.push(h("p", { key: "cw" + i, className: "ge-note ge-warn" }, "⚠ " + w.phenomena + w.significance + " · " + w.locations.slice(0, 5).join("、") + (w.locations.length > 5 ? " +" + (w.locations.length - 5) : "")));
+        });
+        cwa.typhoons.slice(0, 3).forEach(function (t, i) {
+          bits.push(h("p", { key: "ct" + i, className: "ge-note" }, "🌀 " + (t.cwaName || t.name) + " " + t.name + " · " + t.lat.toFixed(1) + "N " + t.lon.toFixed(1) + "E" + (t.maxWind != null ? " · " + t.maxWind + " m/s" : "") + (t.pressure != null ? " · " + t.pressure + " hPa" : "") + (t.movement ? " · " + t.movement : "")));
+        });
+      }
       if (quakes.list.length) bits.push(h("ul", { key: "ql", className: "ge-list ge-passes ge-quakes" }, quakes.list.slice(0, 40).map(function (q) {
         var on = selQuakeId === q.id;
         return h("li", { key: q.id }, h("button", { type: "button", className: cx("ge-li", "ge-pass", on && "is-on"), "aria-pressed": on, onClick: function () { if (on) setSelQuakeId(null); else selectQuake(q.id, true); } },
@@ -4834,7 +4843,7 @@ void main() {
             h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --")))));
       })));
       else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ earthquakes recorded by USGS around Taiwan in the last 30 days."));
-      bits.push(h("p", { key: "src", className: "ge-src" }, "USGS Earthquake Catalog (FDSN) · 20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
+      bits.push(h("p", { key: "src", className: "ge-src" }, (quakes.source && quakes.source !== "USGS" ? quakes.source + " · 資料來源：交通部中央氣象署 · " : "USGS Earthquake Catalog (FDSN) · ") + "20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
       return bits;
     }
 

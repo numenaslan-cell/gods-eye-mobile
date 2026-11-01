@@ -5,11 +5,12 @@
  *   GET  /api/states/all   OpenSky CORS proxy (10 s edge cache; legacy route, kept as the client's fallback)
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
+ *   GET  /api/quakes | /api/typhoon | /api/warnings   CWA open data (secret CWA_API_KEY); {enabled:false} -> client falls back to USGS
  *   POST /api/push/subscribe | /unsubscribe | /test   Web Push subscriptions (stored in KV)
  *   cron (every 2 min)     M4.5+ quakes near Taiwan, China Coast Guard vessel in AIS, upcoming ISS pass -> Web Push
  *
  * Bindings (see proxy/DEPLOY.md):  HUB (Durable Object, SQLite), SUBS (KV),
- *   secrets AISSTREAM_API_KEY, VAPID_PRIVATE_KEY;  vars VAPID_PUBLIC_KEY, VAPID_SUBJECT (optional).
+ *   secrets AISSTREAM_API_KEY, VAPID_PRIVATE_KEY, INGEST_TOKEN, optional CWA_API_KEY;  vars VAPID_PUBLIC_KEY, VAPID_SUBJECT (optional).
  * Everything degrades gracefully when a binding / secret is missing (the site then shows DEMO data / "push not configured").
  */
 import createPasses from "../../assets/passes.js";
@@ -18,6 +19,7 @@ import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
 import { applyAis, applyMpb, trimShips, publicShips, isCcg, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
+import { cwaData } from "./cwa.mjs";
 
 const UPSTREAM = "https://opensky-network.org/api";
 const SITE = "https://numenaslan-cell.github.io/gods-eye-mobile/";
@@ -92,8 +94,13 @@ export default {
       const r = await hub.fetch("https://hub/ingest", { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
       return json(cors, await r.json(), r.status);
     }
+    if (request.method === "GET" && /^\/api\/(quakes|typhoon|warnings)$/.test(p)) {
+      if (!env.CWA_API_KEY || !hub) return json(cors, { enabled: false, source: "usgs", reason: "CWA_API_KEY not configured" }, 200, { "Cache-Control": "public, max-age=300" });
+      const r = await hub.fetch("https://hub/cwa/" + p.slice("/api/".length)); // fetched + parsed inside the Durable Object (big JSON, 10 ms CPU on the free plan front Worker)
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=60" }) });
+    }
     if (request.method === "GET" && p === "/api/push/config") {
-      return json(cors, { enabled: !!(env.SUBS && hub && env.VAPID_PRIVATE_KEY && env.VAPID_PUBLIC_KEY), publicKey: env.VAPID_PUBLIC_KEY || null, aisEnabled: !!(env.AISSTREAM_API_KEY || env.INGEST_TOKEN) }, 200, { "Cache-Control": "public, max-age=300" });
+      return json(cors, { enabled: !!(env.SUBS && hub && env.VAPID_PRIVATE_KEY && env.VAPID_PUBLIC_KEY), publicKey: env.VAPID_PUBLIC_KEY || null, aisEnabled: !!(env.AISSTREAM_API_KEY || env.INGEST_TOKEN), cwaEnabled: !!env.CWA_API_KEY }, 200, { "Cache-Control": "public, max-age=300" });
     }
     if (request.method === "POST" && /^\/api\/push\/(subscribe|unsubscribe|test)$/.test(p)) {
       if (origin && !originOk(origin)) return json(cors, { error: "origin not allowed" }, 403);
@@ -129,6 +136,7 @@ export class Hub {
     try {
       if (path === "/ships") return this.shipsResponse();
       if (path === "/ingest") return this.ingest(request);
+      if (path.startsWith("/cwa/")) return this.cwa(path.slice(5));
       if (path === "/cron") {
         const report = await this.runAlerts();
         this.cron = { at: Date.now(), report }; await this.ctx.storage.put("cron", this.cron); // heartbeat, visible in /api/ships -> cron
@@ -140,6 +148,24 @@ export class Hub {
       if (path === "/test") return this.testPush(body);
     } catch (e) { return new Response(JSON.stringify({ error: String((e && e.message) || e) }), { status: 500 }); }
     return new Response("{}", { status: 404 });
+  }
+
+
+  /* ---- CWA (needs secret CWA_API_KEY; the front Worker only routes here when it is set) ---- */
+  async cwa(kind) {
+    const ttl = { quakes: 60000, typhoon: 300000, warnings: 120000 }[kind];
+    if (!ttl) return new Response("{}", { status: 404 });
+    this.cwaCache = this.cwaCache || {};
+    const c = this.cwaCache[kind], now = Date.now();
+    if (c && now - c.at < ttl) return new Response(c.body, { headers: { "Content-Type": "application/json" } });
+    try {
+      const body = JSON.stringify(await cwaData(this.env, kind));
+      this.cwaCache[kind] = { at: now, body };
+      return new Response(body, { headers: { "Content-Type": "application/json" } });
+    } catch (e) {
+      if (c) return new Response(c.body, { headers: { "Content-Type": "application/json" } }); // serve stale on upstream failure
+      return new Response(JSON.stringify({ enabled: true, source: "cwa", error: String((e && e.message) || e).slice(0, 160) }), { status: 502, headers: { "Content-Type": "application/json" } });
+    }
   }
 
   async alarm() { await this.collect(); }
@@ -277,6 +303,9 @@ export class Hub {
   }
 
   async checkQuakes(list, push) {
+    if (this.env.CWA_API_KEY) { // CWA felt-earthquake reports (E-A0015-001) when the user's own key is configured; USGS otherwise / on failure
+      try { return await this.checkQuakesCwa(list, push); } catch (e) { /* fall through to USGS */ }
+    }
     const res = await fetch(this.env.USGS_URL || "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson", { cf: { cacheTtl: 60, cacheEverything: true } });
     if (!res.ok) throw new Error("USGS HTTP " + res.status);
     const seen = (await this.ctx.storage.get("quakeSeen")) || [];
@@ -288,6 +317,20 @@ export class Hub {
     }
     if (fresh.length) await this.ctx.storage.put("quakeSeen", seen.slice(-100));
     return fresh.length;
+  }
+
+  async checkQuakesCwa(list, push) {
+    const d = JSON.parse(await (await this.cwa("quakes")).text());
+    if (!d.quakes) throw new Error(d.error || "cwa unavailable");
+    const seen = (await this.ctx.storage.get("quakeSeen")) || [], now = Date.now();
+    let n = 0;
+    for (const q of d.quakes) {
+      if (q.mag < 4.5 || now - q.t > 6 * 3600000 || seen.includes(q.id)) continue; // same M4.5+ / 6 h rule as the USGS path
+      await push(list, { title: "🌏 台灣地震 M" + q.mag.toFixed(1) + "（中央氣象署）", body: (q.report || q.place) + " · 深度 " + Math.round(q.depthKm) + " km", tag: "quake-" + q.id, url: q.url || SITE }, { urgency: "high", ttl: 3600 });
+      seen.push(q.id); n++;
+    }
+    if (n) await this.ctx.storage.put("quakeSeen", seen.slice(-100));
+    return n;
   }
 
   async checkCcg(list, push) {

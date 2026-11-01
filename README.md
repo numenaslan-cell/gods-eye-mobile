@@ -84,6 +84,7 @@ scripts/gen-vapid.mjs   產生 VAPID 金鑰
 
 ## 致謝 / Credits
 
+* 地震／颱風／警特報（選用）：[交通部中央氣象署開放資料](https://opendata.cwa.gov.tw/)——需要你自己的 API key（Worker secret `CWA_API_KEY`），未設定時自動使用 USGS；政府資料開放授權條款第 1 版
 * 船舶資料：[aisstream.io](https://aisstream.io) ＋ [交通部航港局](https://mpbais.motcmpb.gov.tw/aismpb/)「臺灣海域船舶即時資訊系統」（未公開文件的端點、無公開授權條款；僅低頻率輪詢，僅供展示用途）
 * 航班資料：[adsb.lol](https://adsb.lol)（© adsb.lol contributors，ODbL 1.0）、[adsb.fi](https://adsb.fi) Open Data（僅限非商業）、[OpenSky Network](https://opensky-network.org)（Schäfer et al., IPSN 2014）
 * 衛星軌道資料：[CelesTrak](https://celestrak.org)（Dr. T.S. Kelso）

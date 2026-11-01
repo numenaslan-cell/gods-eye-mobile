@@ -37,6 +37,8 @@
     flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "adsb.lol", nextTry: 0 },
     ships: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
     quakes: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "USGS", nextTry: 0 },
+    // Taiwan CWA (交通部中央氣象署) extras: only populated when the Worker has the owner's CWA_API_KEY secret (GET /quakes says enabled:true); otherwise USGS only
+    cwa: { enabled: false, checked: 0, typhoons: [], warnings: [], updated: 0 },
     sats: {
       status: "loading", total: 0, names: [], pos: new Float32Array(0), over: [], iss: null,
       updated: 0, rev: 0, error: "", source: "CelesTrak", group: cfg.satGroup, tleAgeMin: null,
@@ -277,23 +279,58 @@
     setQuakes("demo", cfg.demoFallback ? demoQuakes() : [], msg);
     scheduleQuakes(Math.min(60000 * Math.pow(2, quakeFailures - 1), 600000));
   }
+  // CWA overlay (only with the owner's CWA_API_KEY on the Worker). Resolves to [] when disabled / unavailable; never rejects.
+  function cwaQuakes() {
+    var c = state.cwa;
+    if (!cfg.proxyBase || (c.checked && !c.enabled && Date.now() - c.checked < 3600000)) return Promise.resolve([]);
+    return fetchTimeout(cfg.proxyBase + "/quakes", 10000, { cache: "no-store" }).then(function (res) { return res.ok ? res.json() : null; }).then(function (j) {
+      c.checked = Date.now(); c.enabled = !!(j && j.enabled && j.quakes);
+      if (!c.enabled) return [];
+      return j.quakes.map(function (q) { return { id: q.id, mag: q.mag, depthKm: q.depthKm, lat: q.lat, lon: q.lon, t: q.t, place: q.place, url: q.url || "", demo: false, src: "CWA", report: q.report || "" }; });
+    }).catch(function () { return []; });
+  }
+  function cwaExtras() {
+    var c = state.cwa; if (!c.enabled || !cfg.proxyBase) return;
+    Promise.all(["/typhoon", "/warnings"].map(function (p) {
+      return fetchTimeout(cfg.proxyBase + p, 10000, { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+    })).then(function (r) {
+      if (r[0] && r[0].typhoons) c.typhoons = r[0].typhoons;
+      if (r[1] && r[1].warnings) c.warnings = r[1].warnings;
+      c.updated = Date.now(); state.quakes.rev++; emit("quakes");
+    });
+  }
+  // Prefer the CWA record when it is the same event as a USGS one (±3 min, ±1.5°); add CWA-only events.
+  function mergeCwa(usgs, cwa) {
+    var out = usgs.filter(function (u) { return !cwa.some(function (q) { return Math.abs(q.t - u.t) < 180000 && Math.abs(q.lat - u.lat) < 1.5 && Math.abs(q.lon - u.lon) < 1.5; }); });
+    cwa.forEach(function (q) { if (q.lat >= QK.minLat && q.lat <= QK.maxLat && q.lon >= QK.minLon && q.lon <= QK.maxLon && q.mag >= QK.minMag && Date.now() - q.t < QK.days * 86400000) out.push(q); });
+    return out.sort(function (a, b) { return b.t - a.t; });
+  }
   function pollQuakes() {
     if (document.hidden) { scheduleQuakes(300000); return; }
     var start = new Date(Date.now() - QK.days * 86400000).toISOString().slice(0, 19);
     var url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=200&minmagnitude=" + QK.minMag +
       "&minlatitude=" + QK.minLat + "&maxlatitude=" + QK.maxLat + "&minlongitude=" + QK.minLon + "&maxlongitude=" + QK.maxLon + "&starttime=" + start;
+    var cwaP = cwaQuakes();
     fetchTimeout(url, 15000, { cache: "no-store" }).then(function (res) {
       if (!res.ok) throw new Error("USGS HTTP " + res.status);
       return res.json();
     }).then(function (j) {
-      quakeFailures = 0;
-      var list = (j.features || []).map(mapQuake).filter(Boolean).sort(function (a, b) { return b.t - a.t; });
-      setQuakes("live", list, "");
-      scheduleQuakes(300000);
+      return cwaP.then(function (cwa) {
+        quakeFailures = 0;
+        var list = (j.features || []).map(mapQuake).filter(Boolean).sort(function (a, b) { return b.t - a.t; });
+        state.quakes.source = cwa.length ? "USGS + CWA" : "USGS";
+        setQuakes("live", cwa.length ? mergeCwa(list, cwa) : list, "");
+        cwaExtras();
+        scheduleQuakes(300000);
+      });
     }).catch(function (err) {
-      var msg = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err);
-      if (/failed to fetch|networkerror|load failed/i.test(msg)) msg = "network / CORS blocked";
-      quakesToDemo(msg);
+      return cwaP.then(function (cwa) {
+        var recent = cwa.filter(function (q) { return q.mag >= QK.minMag; });
+        if (recent.length) { quakeFailures = 0; state.quakes.source = "CWA"; setQuakes("live", recent.sort(function (a, b) { return b.t - a.t; }), ""); cwaExtras(); scheduleQuakes(300000); return; }
+        var msg = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err);
+        if (/failed to fetch|networkerror|load failed/i.test(msg)) msg = "network / CORS blocked";
+        quakesToDemo(msg);
+      });
     });
   }
 

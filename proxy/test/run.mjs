@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
 import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
+import { readFileSync } from "node:fs";
+import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
 import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
 
@@ -150,5 +152,39 @@ await ok("publicShips: cap keeps CCG + commercial first, reports total; trimShip
   const l = publicShips(map, now, 1800000, 12);
   assert.equal(l.length, 12); assert.equal(l.total, 61); assert.equal(l[0].mmsi, "412000001"); assert.ok(l[0].ccg); assert.ok(l.slice(1, 11).every((x) => x.type === 70)); assert.equal(l[11].type, 30); assert.ok(!("_r" in l[0]));
   assert.equal(trimShips(map, 20), 41); assert.equal(Object.keys(map).length, 20); assert.ok(map["412000001"] && map["353001000"]);
+});
+
+const fx = (n) => JSON.parse(readFileSync(new URL("./fixtures/" + n, import.meta.url), "utf8"));
+const TY = { records: { tropicalCyclones: { tropicalCyclone: [{ typhoonName: "KRATHON", cwaTyphoonName: "山陀兒", year: "2024", cwaTyNo: "14", analysisData: { fix: [
+  { fixTime: "2024-09-30T19:00:00+08:00", coordinate: "120.6,20.5", maxWindSpeed: "45", maxGustSpeed: "55", pressure: "940", movingSpeed: "10", movingDirection: "W" },
+  { fixTime: "2024-09-30T20:00:00+08:00", coordinate: "120.5,20.5", maxWindSpeed: "48", maxGustSpeed: "58", pressure: "930", movingSpeed: "10", movingDirection: "W", movingPrediction: [{ value: "以每小時6公里速度，向西北西轉北進行", lang: "zh-hant" }, { value: "WNW TURNING NORTH 6 KM/HR", lang: "en-us" }], circleOf15Ms: { radius: "200" }, circleOf25Ms: { radius: "70" } }] },
+  forecastData: { forecast: [{ tau: "12", coordinate: "120.1,21.0", maxWindSpeed: "48", pressure: "930", radiusOf70PercentProbability: "90" }] } }] } } }; // shape per CWA W-C0034-005 product description (synthetic values)
+const WN = { records: { location: [{ locationName: "臺中市", hazardConditions: { hazards: [{ info: { language: "zh-TW", phenomena: "大雨", significance: "特報" }, validTime: { startTime: "2026-11-01T08:00:00+08:00", endTime: "2026-11-02T08:00:00+08:00" } }] } },
+  { locationName: "苗栗縣", hazardConditions: { hazards: [{ info: { phenomena: "大雨", significance: "特報" }, validTime: { startTime: "2026-11-01T08:00:00+08:00", endTime: "2026-11-02T10:00:00+08:00" } }, { info: { phenomena: "濃霧", significance: "特報" }, validTime: { endTime: "2026-10-30T08:00:00+08:00" } }] } }, { locationName: "宜蘭縣", hazardConditions: { hazards: [] } }] } }; // shape per W-C0033-001 (synthetic values)
+await ok("CWA: real E-A0015-001 / E-A0016-001 samples normalise (felt + local), ids dedupe by origin time", () => {
+  const a = normalizeCwaQuakes(fx("cwa-E-A0015-001.json"), "significant"), b = normalizeCwaQuakes(fx("cwa-E-A0016-001.json"), "local");
+  assert.equal(a.length, 2); assert.equal(a[0].mag, 5.6); assert.equal(a[0].t, Date.parse("2026-11-01T16:20:07+08:00")); assert.equal(a[0].lat, 24.89); assert.equal(a[0].depthKm, 119.5);
+  assert.ok(a[0].place.includes("宜蘭縣")); assert.ok(a[0].intensity.includes("3級")); assert.equal(a[0].src, "CWA"); assert.ok(a[0].url.startsWith("https://scweb.cwa.gov.tw/"));
+  assert.notEqual(b[0].id, b[1].id); // E-A0016 reuses EarthquakeNo, so ids come from the origin time
+  const m = mergeQuakes(a, b, a); assert.equal(m.length, 4); assert.ok(m[0].t > m[1].t);
+});
+await ok("CWA: typhoon + warnings normalisation", () => {
+  const t = normalizeTyphoons(TY)[0];
+  assert.deepEqual([t.name, t.cwaName, t.lat, t.lon, t.maxWind, t.pressure, t.r15, t.r25, t.track.length, t.forecast[0].hour, t.forecast[0].probRadius], ["KRATHON", "山陀兒", 20.5, 120.5, 48, 930, 200, 70, 2, 12, 90]);
+  assert.ok(t.movement.includes("西北西"));
+  const w = normalizeWarnings(WN, Date.parse("2026-11-01T12:00:00+08:00"));
+  assert.equal(w.length, 2); const g = groupWarnings(w); assert.equal(g.length, 1); assert.deepEqual(g[0].locations, ["臺中市", "苗栗縣"]); assert.equal(g[0].end, Date.parse("2026-11-02T10:00:00+08:00"));
+});
+await ok("CWA gate: no CWA_API_KEY -> enabled:false (USGS fallback), never calls CWA; with a key -> uses it, key never leaks, partial failure tolerated", async () => {
+  let calls = 0;
+  const off = await cwaData({}, "quakes", async () => { calls++; throw new Error("must not be called"); });
+  assert.equal(off.enabled, false); assert.equal(off.source, "usgs"); assert.equal(calls, 0);
+  const urls = [];
+  const f = async (u) => { urls.push(u); if (/E-A0015/.test(u)) return jr(fx("cwa-E-A0015-001.json")); if (/E-A0016/.test(u)) return jr({}, 500); if (/W-C0034/.test(u)) return jr(TY); if (/W-C0033/.test(u)) return jr(WN); throw new Error("unexpected"); };
+  const env = { CWA_API_KEY: "SECRET-KEY-123" };
+  const q = await cwaData(env, "quakes", f); assert.equal(q.enabled, true); assert.equal(q.quakes.length, 2); assert.equal(q.partial, true);
+  assert.ok(urls.every((u) => u.startsWith("https://opendata.cwa.gov.tw/api/v1/rest/datastore/") && u.includes("Authorization=SECRET-KEY-123")));
+  assert.equal((await cwaData(env, "typhoon", f)).typhoons.length, 1); assert.equal((await cwaData(env, "warnings", f)).warnings[0].phenomena, "大雨");
+  await assert.rejects(cwaData(env, "quakes", async (u) => { throw new Error("boom " + u); }), (e) => !String(e.message).includes("SECRET-KEY-123"));
 });
 console.log(n + " tests passed");

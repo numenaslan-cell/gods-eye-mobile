@@ -1,0 +1,248 @@
+{
+ "success": "true",
+ "records": {
+  "datasetDescription": "地震報告",
+  "Earthquake": [
+   {
+    "IssueTime": "2026-10-28T14:23:24+08:00",
+    "ValidTime": {
+     "EndTime": "2026-10-28T22:23:24+08:00"
+    },
+    "EarthquakeNo": 115000,
+    "ReportType": "地震報告",
+    "ReportColor": "綠色",
+    "ReportContent": "10/28-14:19臺灣東部海域發生規模4.5有感地震，最大震度花蓮縣太魯閣、宜蘭縣南澳、臺東縣長濱1級。",
+    "ReportImageURI": "https://scweb.cwa.gov.tw/webdata/OLDEQ/202610/2026102814192345_H.png",
+    "ReportRemark": "本報告係中央氣象署地震觀測網即時地震資料地震速報之結果。",
+    "Web": "https://scweb.cwa.gov.tw/zh-tw/earthquake/details/2026102814192345",
+    "EarthquakeInfo": {
+     "OriginTime": "2026-10-28T14:19:23+08:00",
+     "Source": "中央氣象署",
+     "FocalDepth": 33.5,
+     "Epicenter": {
+      "Location": "花蓮縣政府東方  85.1  公里 (位於臺灣東部海域)",
+      "EpicenterLatitude": 23.85,
+      "EpicenterLongitude": 122.44
+     },
+     "EarthquakeMagnitude": {
+      "MagnitudeType": "芮氏規模",
+      "MagnitudeValue": 4.5
+     }
+    },
+    "Intensity": {
+     "ShakingArea": [
+      {
+       "AreaDesc": "花蓮縣地區",
+       "CountyName": "花蓮縣",
+       "InfoStatus": "observe",
+       "AreaIntensity": "1級",
+       "EqStation": [
+        {
+         "pga": {
+          "unit": "gal",
+          "EWComponent": 0.98,
+          "NSComponent": 1.15,
+          "VComponent": 0.35,
+          "IntScaleValue": 0.84
+         },
+         "pgv": {
+          "unit": "kine",
+          "EWComponent": 0.02,
+          "NSComponent": 0.02,
+          "VComponent": 0.01,
+          "IntScaleValue": 0.02
+         },
+         "StationName": "太魯閣",
+         "StationID": "ETL",
+         "InfoStatus": "observe",
+         "BackAzimuth": 112.38,
+         "EpicenterDistance": 90.09,
+         "SeismicIntensity": "1級",
+         "StationLatitude": 24.159,
+         "StationLongitude": 121.623
+        }
+       ]
+      },
+      {
+       "AreaDesc": "宜蘭縣地區",
+       "CountyName": "宜蘭縣",
+       "InfoStatus": "observe",
+       "AreaIntensity": "1級",
+       "EqStation": [
+        {
+         "pga": {
+          "unit": "gal",
+          "EWComponent": 1.66,
+          "NSComponent": 1.39,
+          "VComponent": 0.38,
+          "IntScaleValue": 0.95
+         },
+         "pgv": {
+          "unit": "kine",
+          "EWComponent": 0.02,
+          "NSComponent": 0.03,
+          "VComponent": 0.01,
+          "IntScaleValue": 0.03
+         },
+         "StationName": "南澳",
+         "StationID": "ENA",
+         "InfoStatus": "observe",
+         "BackAzimuth": 132.26,
+         "EpicenterDistance": 95.11,
+         "SeismicIntensity": "1級",
+         "StationLatitude": 24.426,
+         "StationLongitude": 121.749
+        }
+       ]
+      },
+      {
+       "AreaDesc": "臺東縣地區",
+       "CountyName": "臺東縣",
+       "InfoStatus": "observe",
+       "AreaIntensity": "1級",
+       "EqStation": [
+        {
+         "pga": {
+          "unit": "gal",
+          "EWComponent": 0.95,
+          "NSComponent": 1.46,
+          "VComponent": 0.58,
+          "IntScaleValue": 1.33
+         },
+         "pgv": {
+          "unit": "kine",
+          "EWComponent": 0.03,
+          "NSComponent": 0.03,
+          "VComponent": 0.02,
+          "IntScaleValue": 0.04
+         },
+         "StationName": "長濱",
+         "StationID": "ECB",
+         "InfoStatus": "observe",
+         "BackAzimuth": 59.67,
+         "EpicenterDistance": 117.12,
+         "SeismicIntensity": "1級",
+         "StationLatitude": 23.316,
+         "StationLongitude": 121.451
+        }
+       ]
+      },
+      {
+       "AreaDesc": "最大震度1級地區",
+       "CountyName": "花蓮縣、宜蘭縣、臺東縣",
+       "AreaIntensity": "1級",
+       "EqStation": []
+      }
+     ]
+    }
+   },
+   {
+    "IssueTime": "2026-10-28T11:02:11+08:00",
+    "ValidTime": {
+     "EndTime": "2026-10-28T19:02:11+08:00"
+    },
+    "EarthquakeNo": 115000,
+    "ReportType": "地震報告",
+    "ReportColor": "綠色",
+    "ReportContent": "10/28-10:59花蓮縣近海發生規模3.7有感地震，最大震度花蓮縣鹽寮2級。",
+    "ReportImageURI": "https://scweb.cwa.gov.tw/webdata/OLDEQ/202610/2026102810594437_H.png",
+    "ReportRemark": "本報告係中央氣象署地震觀測網即時地震資料地震速報之結果。",
+    "Web": "https://scweb.cwa.gov.tw/zh-tw/earthquake/details/2026102810594437",
+    "EarthquakeInfo": {
+     "OriginTime": "2026-10-28T10:59:44+08:00",
+     "Source": "中央氣象署",
+     "FocalDepth": 24.1,
+     "Epicenter": {
+      "Location": "花蓮縣政府東方  10.2  公里 (位於花蓮縣近海)",
+      "EpicenterLatitude": 24.0,
+      "EpicenterLongitude": 121.72
+     },
+     "EarthquakeMagnitude": {
+      "MagnitudeType": "芮氏規模",
+      "MagnitudeValue": 3.7
+     }
+    },
+    "Intensity": {
+     "ShakingArea": [
+      {
+       "AreaDesc": "花蓮縣地區",
+       "CountyName": "花蓮縣",
+       "InfoStatus": "observe",
+       "AreaIntensity": "2級",
+       "EqStation": [
+        {
+         "pga": {
+          "unit": "gal",
+          "EWComponent": 3.04,
+          "NSComponent": 2.42,
+          "VComponent": 1.0,
+          "IntScaleValue": 2.82
+         },
+         "pgv": {
+          "unit": "kine",
+          "EWComponent": 0.1,
+          "NSComponent": 0.09,
+          "VComponent": 0.04,
+          "IntScaleValue": 0.12
+         },
+         "StationName": "鹽寮",
+         "StationID": "EYL",
+         "InfoStatus": "observe",
+         "BackAzimuth": 49.2,
+         "EpicenterDistance": 15.91,
+         "SeismicIntensity": "2級",
+         "StationLatitude": 23.904,
+         "StationLongitude": 121.602
+        }
+       ]
+      },
+      {
+       "AreaDesc": "宜蘭縣地區",
+       "CountyName": "宜蘭縣",
+       "InfoStatus": "observe",
+       "AreaIntensity": "1級",
+       "EqStation": [
+        {
+         "pga": {
+          "unit": "gal",
+          "EWComponent": 1.38,
+          "NSComponent": 1.37,
+          "VComponent": 0.76,
+          "IntScaleValue": 0.98
+         },
+         "pgv": {
+          "unit": "kine",
+          "EWComponent": 0.03,
+          "NSComponent": 0.02,
+          "VComponent": 0.01,
+          "IntScaleValue": 0.03
+         },
+         "StationName": "南澳",
+         "StationID": "ENA",
+         "InfoStatus": "observe",
+         "BackAzimuth": 183.54,
+         "EpicenterDistance": 47.66,
+         "SeismicIntensity": "1級",
+         "StationLatitude": 24.426,
+         "StationLongitude": 121.749
+        }
+       ]
+      },
+      {
+       "AreaDesc": "最大震度2級地區",
+       "CountyName": "花蓮縣",
+       "AreaIntensity": "2級",
+       "EqStation": []
+      },
+      {
+       "AreaDesc": "最大震度1級地區",
+       "CountyName": "宜蘭縣",
+       "AreaIntensity": "1級",
+       "EqStation": []
+      }
+     ]
+    }
+   }
+  ]
+ }
+}
