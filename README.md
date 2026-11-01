@@ -1,7 +1,8 @@
 # God's Eye View // ORB-7 🌍🛰️
 
-手機優先的「上帝視角」衛星／航班追蹤地球儀。純前端、不需要 API key，可直接放到 GitHub Pages。
-資料來自**公開資料源**（OpenSky Network 航班、CelesTrak 衛星軌道），抓不到時會顯示明顯的橘色 **DEMO DATA** 徽章並改用示範資料。
+手機優先的「上帝視角」台灣周邊即時資料地球儀：航班、船舶（AIS）、地震／颱風／警特報、共機日報、衛星與 ISS 過境預測，並支援 Web Push 提醒。
+前端是純靜態網頁（GitHub Pages，瀏覽器端不需要任何 API key）；後端只有一支免費方案的 Cloudflare Worker（CORS 代理、資料合併、推播），以及一支跑在一般網路 IP 的資料收集器（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）。
+資料來自**公開資料源**：adsb.lol／adsb.fi／OpenSky（航班）、交通部航港局 MPB＋aisstream（船舶）、中央氣象署／USGS（地震）、第三方整理的國防部日報（PLA）、海巡署 RSS、CelesTrak（衛星）；抓不到時會顯示明顯的橘色 **DEMO DATA** 徽章並改用示範資料。各來源的授權與限制見 [`docs/DATA-SOURCES.md`](docs/DATA-SOURCES.md)。
 
 ![390x844 截圖](screenshots/390x844.png)
 
@@ -14,11 +15,11 @@
 * 🌐 3D 地球（three.js）：日間 / 夜視 (NVG) / 熱像 (THERM) 三種顯示模式，晝夜交界線依「現在時間」計算
 * ✈️ **台灣周邊真實航班**（[adsb.lol](https://adsb.lol)〔ODbL〕為主、[adsb.fi](https://adsb.fi) 備援、OpenSky 最後手段，由 Worker `/api/flights` 合併，範圍 21.5–26.5°N、119–123°E）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
 * 🛰️ **真實衛星**（CelesTrak TLE + satellite.js SGP4）：顯示衛星總數、**台灣上空的衛星清單**、ISS 即時位置（可一鍵追蹤）
-* 🌏 **地震圖層 + QUAKES 面板**：USGS 台灣周邊近 30 天 M3.0+ 地震，依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點，點選會飛到震央
+* 🌏 **地震圖層 + QUAKES 面板**：USGS 台灣周邊近 30 天 M3.0+ 地震（有中央氣象署資料時疊加 CWA 有感地震、颱風與警特報），依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點，點選會飛到震央
 * 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料來源為 aisstream.io 與交通部航港局（MPB）臺灣海域 AIS，由收集器低頻率取得並經自己的 Cloudflare Worker 以 MMSI 合併（API key 只存在 Worker secret）；CCG 標記為名稱／船型啟發式（排除漁船型別 30 的純 MMSI 前綴比對），沒有 key 或失敗時顯示 **DEMO DATA**
 * 🛰️ **過境預測 (Passes)**：用瀏覽器定位（預設台北，也可手動輸入經緯度）預測未來 72 小時 ISS、天宮 (CSS) 與數顆亮星（HST、AJISAI、TERRA、AQUA、ENVISAT、ALOS）的過境：起／峰／止時間、最高仰角、起訖方位、是否「可能看得到」（衛星受日照且天色夠暗）；「LOOK HERE」羅盤會指出現在該看的方位與仰角，可選用手機羅盤；頁面開著時可在過境前 5 分鐘通知
 * 🛡️ **PLA 分頁**：最新一天共機架次／逾越中線／共艦數、近 7 日長條圖與趨勢（第三方整理自國防部日報）＋ 海巡署新聞中提到「海警」的項目（Worker `/api/cga`，30 分鐘快取）
-* 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（USGS）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關。需先部署 Worker（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）；iOS 16.4+ 須先加入主畫面
+* 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（CWA／USGS）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關。需先部署 Worker（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）；iOS 16.4+ 須先加入主畫面
 * 🔎 搜尋：輸入呼號（如 `CAL`）、船名或 9 位 MMSI、衛星名稱（如 `STARLINK`、`ISS`）或座標（`25.03,121.56`）
 * 📍 快速定位：台北101、桃園機場、台灣上空
 * 📱 手機優先：375–430 px 直式不會橫向捲動、所有按鈕 ≥ 44 px、HUD 面板可收合（手機上一次只展開一個）、支援瀏海／Home 指示條 safe-area
@@ -102,10 +103,10 @@ MIT © 2026 messiah — 見 [LICENSE](LICENSE)。第三方資料與素材請遵�
 
 ## English summary
 
-**God's Eye View // ORB-7** is a mobile-first, client-side-only 3D globe that shows **real public data** around Taiwan: live flights from the [OpenSky Network](https://opensky-network.org) REST API and satellites propagated in the browser from [CelesTrak](https://celestrak.org) TLEs with [satellite.js](https://github.com/shashwatak/satellite-js) (real satellite count, satellites currently over Taiwan, ISS position). It has DAY / NVG / THERM modes, a flight HUD you can cycle through real aircraft, search, camera follow, safe-area aware responsive layout, and PWA basics (installable).
+**God's Eye View // ORB-7** is a mobile-first 3D globe of **real public data** around Taiwan: flights (adsb.lol → adsb.fi → OpenSky), ships (Taiwan MPB + aisstream, with a suspected-China-Coast-Guard heuristic), earthquakes / typhoon / warnings (CWA with USGS fallback), PLA daily stats and CGA 海警 news, satellites and ISS pass predictions (CelesTrak + satellite.js), plus Web Push alerts. The front end is a static page; the backend is one free-plan Cloudflare Worker (CORS proxy, merging, Durable Object, cron, push) and a small collector script on a normal-IP machine (needed because aisstream and CWA block Cloudflare IPs). It has DAY / NVG / THERM modes, search, camera follow, safe-area aware responsive layout, and PWA basics.
 
-* **Run:** serve the folder with any static server (`python3 -m http.server`) and open `index.html`; no build or API key needed. `node build.mjs` only if you edit `src/app.js`.
+* **Run:** serve the folder with any static server (`python3 -m http.server`) and open `index.html`; no build or browser-side API key needed (the live feeds come from the deployed Worker, see `proxy/DEPLOY.md`). `node build.mjs` only if you edit `src/app.js`.
 * **Deploy:** push to GitHub, enable *Settings → Pages → main / root*. All paths are relative.
-* **Data caveats:** CelesTrak sends `Access-Control-Allow-Origin: *`; OpenSky does **not** reliably allow third-party origins and anonymous access is limited to ~400 credits/day. If a feed fails (CORS, 429, timeout) the UI shows an amber **DEMO DATA** badge and generated placeholder data. For reliable flight data deploy `proxy/cloudflare-worker.js` and set `openskyBase` in `assets/config.js`.
+* **Data caveats:** every feed has its own terms (adsb.fi and the CGA RSS are non-commercial; the MPB endpoint is undocumented; the PLA stats are a third-party compilation) — see `docs/DATA-SOURCES.md`. If a feed fails (CORS, 429, timeout) the UI falls back to another source or shows an amber **DEMO DATA** badge with generated placeholder data.
 * **Disclaimer:** the "spy dashboard" look is purely fictional styling. The original fake `TOP SECRET // NOFORN` banner was replaced with `OPEN DATA`. Data is public, best-effort and unverified — not for navigation or safety-critical use. Demo data is generated randomly.
-* **License:** MIT © 2026 messiah. Data sources: OpenSky Network, CelesTrak; textures: NASA Earth Observatory.
+* **License:** MIT © 2026 messiah. Data sources: adsb.lol, adsb.fi, OpenSky Network, aisstream.io, Taiwan MPB, CWA, USGS, CGA, CelesTrak; textures: NASA Earth Observatory.
