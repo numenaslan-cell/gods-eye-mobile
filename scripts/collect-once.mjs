@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// One-shot collector for God's Eye View — run by .github/workflows/collector.yml every ~5 min (replaces the always-on scripts/ais-collector.mjs).
+// Fetches Taiwan MPB AIS and CWA open data once, optionally listens to aisstream for AIS_SEC seconds, POSTs everything to the Worker ingest
+// routes, then verifies the Worker now reports fresh data. Exits non-zero (=> the workflow run fails loudly) when MPB yields 0 ships,
+// CWA yields nothing, any ingest answers non-2xx, or the Worker timestamps did not advance. aisstream is best-effort (it blocks many cloud IPs).
+//
+//   INGEST_TOKEN=… CWA_API_KEY=… [AISSTREAM_API_KEY=…] [AIS_SEC=60] [WORKER_URL=https://gods-eye-opensky-proxy.numenaslan.workers.dev] node scripts/collect-once.mjs
+// Needs Node >= 22 (global WebSocket). Keys come from the environment only and are never logged.
+import { normalizeMpb } from "../proxy/src/ais.mjs";
+import { cwaData } from "../proxy/src/cwa.mjs";
+import { appendFileSync } from "node:fs";
+
+const TOKEN = (process.env.INGEST_TOKEN || "").trim(), CWA_KEY = (process.env.CWA_API_KEY || "").trim(), AIS_KEY = (process.env.AISSTREAM_API_KEY || "").trim();
+const WORKER = ((process.env.WORKER_URL || "").trim() || "https://gods-eye-opensky-proxy.numenaslan.workers.dev").replace(/\/+$/, "");
+const AIS_SEC = process.env.AIS_SEC === undefined ? 60 : +process.env.AIS_SEC;
+const MPB_URL = process.env.MPB_URL || "https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx";
+const MB = (process.env.MPB_BBOX || "19,116,28,126").split(",").map(Number), MPB_BOX = { lamin: MB[0], lomin: MB[1], lamax: MB[2], lomax: MB[3] };
+const BB = (process.env.BBOX || "18,108,34,132").split(",").map(Number);
+const TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+const scrub = (s) => [TOKEN, CWA_KEY, AIS_KEY].filter(Boolean).reduce((t, k) => t.split(k).join("***"), String(s));
+const errors = [], summary = {};
+const fail = (m) => { errors.push(m); log("FAIL:", scrub(m)); };
+if (!TOKEN) { console.error("INGEST_TOKEN is required"); process.exit(2); }
+
+async function post(path, body, timeout = 60000) {
+  const r = await fetch(WORKER + path, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(path + " ingest HTTP " + r.status + " " + JSON.stringify(j));
+  return j;
+}
+async function withRetry(fn, tries = 3) { let last; for (let i = 0; i < tries; i++) { try { return await fn(); } catch (e) { last = e; log("retry", i + 1, "->", scrub(e.message)); await new Promise((r) => setTimeout(r, 3000 * (i + 1))); } } throw last; }
+
+async function doMpb() {
+  const ships = await withRetry(async () => {
+    const r = await fetch(MPB_URL, { headers: { Referer: "https://mpbais.motcmpb.gov.tw/aismpb/", "User-Agent": "gods-eye-view/1.0 (+https://numenaslan-cell.github.io/gods-eye-mobile/)", Accept: "application/json" }, signal: AbortSignal.timeout(45000) });
+    if (!r.ok) throw new Error("MPB HTTP " + r.status);
+    const gj = await r.json(), feats = Array.isArray(gj.features) ? gj.features : [];
+    if (!feats.length) throw new Error("MPB returned no features (Referer rejected / IP blocked?)");
+    const by = new Map();
+    for (const f of feats) { const x = normalizeMpb(f, MPB_BOX); if (x && (!by.has(x.mmsi) || by.get(x.mmsi).t < x.t)) by.set(x.mmsi, x); }
+    summary.mpbFeatures = feats.length;
+    return [...by.values()];
+  });
+  if (!ships.length) throw new Error("MPB: 0 ships in Taiwan box");
+  const j = await withRetry(() => post("/api/ships/ingest", { ships }));
+  summary.mpbShips = ships.length; summary.mpbIngest = j;
+  log("mpb", summary.mpbFeatures, "features ->", ships.length, "ships ->", JSON.stringify(j));
+}
+async function doCwa() {
+  if (!CWA_KEY) throw new Error("CWA_API_KEY not set");
+  const out = {};
+  for (const k of ["quakes", "typhoon", "warnings"]) { try { out[k] = await withRetry(() => cwaData({ CWA_API_KEY: CWA_KEY }, k), 2); } catch (e) { fail("cwa " + k + " failed: " + e.message); } }
+  if (!Object.keys(out).length) throw new Error("all CWA datasets failed");
+  const j = await withRetry(() => post("/api/cwa/ingest", { cwa: out }, 30000));
+  summary.cwaStored = Object.keys(out); summary.cwaQuakes = ((out.quakes && out.quakes.quakes) || []).length; summary.cwaIngest = j;
+  log("cwa ->", JSON.stringify(j), "quakes:", summary.cwaQuakes);
+}
+async function doAis() {
+  if (!AIS_KEY || !(AIS_SEC > 0)) { log("aisstream skipped"); return; }
+  const buf = new Map(); let total = 0, opened = false, confirmed = false, closed = "";
+  await new Promise((resolve) => {
+    const ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
+    const done = () => { try { ws.close(); } catch { /* ignore */ } resolve(); };
+    const timer = setTimeout(done, AIS_SEC * 1000);
+    ws.onopen = () => { opened = true; ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: [[[BB[0], BB[1]], [BB[2], BB[3]]]], FilterMessageTypes: TYPES })); };
+    ws.onmessage = async (e) => {
+      let m; try { m = JSON.parse(typeof e.data === "string" ? e.data : e.data.text ? await e.data.text() : Buffer.from(e.data).toString()); } catch { return; }
+      if (m.error) { log("aisstream error:", scrub(m.error)); return; }
+      if (m.MessageType === "SubscriptionConfirmation") { confirmed = true; return; }
+      total++; const mm = m.MetaData && m.MetaData.MMSI; if (mm) buf.set(mm + ":" + m.MessageType, m);
+    };
+    ws.onclose = (e) => { closed = e.code + ""; clearTimeout(timer); resolve(); };
+    ws.onerror = () => {};
+  });
+  summary.ais = { opened, confirmed, msgs: total, close: closed };
+  if (!buf.size) { log("aisstream: no messages (opened", opened, "confirmed", confirmed, "close", closed + ") - best effort, not fatal"); return; }
+  const j = await withRetry(() => post("/api/ships/ingest", { messages: [...buf.values()] }));
+  summary.ais.ingest = j; log("aisstream", total, "msgs ->", buf.size, "unique ->", JSON.stringify(j));
+}
+async function verify() {
+  const t0 = Date.now(), get = async (p) => (await fetch(WORKER + p, { signal: AbortSignal.timeout(30000), headers: { "Cache-Control": "no-cache" } })).json();
+  const ships = await get("/api/ships?_=" + t0), q = await get("/api/quakes?_=" + t0);
+  const shipAge = (Date.now() - ships.updated) / 1000, cwaAge = (Date.now() - q.time) / 1000;
+  summary.worker = { shipsUpdatedAgeSec: Math.round(shipAge), shipsCount: ships.count, mpbAgeSec: ships.mpbAgeSec, cwaTimeAgeSec: Math.round(cwaAge), quakes: (q.quakes || []).length, via: q.via };
+  log("worker freshness:", JSON.stringify(summary.worker));
+  if (!(shipAge < 180)) fail("Worker /api/ships not fresh (updated " + Math.round(shipAge) + " s ago)");
+  if (!(cwaAge < 180)) fail("Worker /api/quakes not fresh (time " + Math.round(cwaAge) + " s ago)");
+  if (!(ships.count > 0)) fail("Worker /api/ships returns 0 ships");
+}
+
+const tasks = [["mpb", doMpb], ["cwa", doCwa], ["ais", doAis]];
+const res = await Promise.allSettled(tasks.map(([n, f]) => f().catch((e) => { if (n === "ais") { log("aisstream failed (non-fatal):", scrub(e.message)); summary.aisError = scrub(e.message); } else fail(n + ": " + e.message); })));
+await verify().catch((e) => fail("verify: " + e.message));
+if (process.env.GITHUB_STEP_SUMMARY) {
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, "### Collector run " + new Date().toISOString() + "\n```json\n" + scrub(JSON.stringify({ summary, errors }, null, 1)) + "\n```\n");
+}
+if (errors.length) { console.error("::error::collector failed: " + scrub(errors.join(" | "))); process.exit(1); }
+log("OK");

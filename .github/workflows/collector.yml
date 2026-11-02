@@ -1,0 +1,30 @@
+name: collector
+# Replaces the always-on scripts/ais-collector.mjs: every ~5 min fetch Taiwan MPB AIS + CWA (+ ~60 s of aisstream) and POST to the Worker ingest routes.
+# GitHub cron is best-effort (runs can start several minutes late or be skipped under load). The run FAILS (red + e-mail from GitHub) when MPB gives 0 ships,
+# CWA fails, an ingest route answers non-2xx, or the Worker's last-updated timestamps (/api/ships .updated, /api/quakes .time) did not advance.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: collector
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22   # global WebSocket needs Node >= 22 (Node 20 has none without a flag)
+      - name: Collect once and ingest
+        env:
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          CWA_API_KEY: ${{ secrets.CWA_API_KEY }}
+          AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          AIS_SEC: "60"
+        run: node scripts/collect-once.mjs

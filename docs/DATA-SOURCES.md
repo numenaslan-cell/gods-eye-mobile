@@ -97,3 +97,10 @@
 * React 18、three.js r171、lucide icons — MIT（打包在 `assets/app.bundle.js`；原始 artifact 的 bundle 回收而來）
 * 地球貼圖 — NASA Earth Observatory：*Blue Marble Next Generation w/ Topography and Bathymetry*（日）、*Black Marble 2012*（夜）。NASA 影像一般屬公有領域，建議仍保留致謝。
 * 航班資料 — OpenSky Network；衛星軌道資料 — CelesTrak（T.S. Kelso）。請遵守各自的使用條款，學術引用請見 OpenSky 官網。
+
+## GitHub Actions 收集器（取代常駐的 `scripts/ais-collector.mjs`）
+
+* `.github/workflows/collector.yml`：每 5 分鐘（`*/5 * * * *`，也可 `workflow_dispatch` 手動觸發）執行 `scripts/collect-once.mjs`——抓一次 MPB AIS、一次 CWA（地震／颱風／警報），並（若有 `AISSTREAM_API_KEY`）收聽 aisstream 約 60 秒，再 POST 到 Worker 的 `/api/ships/ingest` 與 `/api/cwa/ingest`，最後檢查 Worker 的 `/api/ships`（`updated`）與 `/api/quakes`（`time`）時間戳是否已更新。
+* **失敗會大聲：** MPB 0 艘船、CWA 全部失敗、任一 ingest 非 2xx、或 Worker 時間戳沒更新，整個 run 會失敗（紅燈＋GitHub 通知信）；每次 run 的 Summary 頁有 JSON 摘要。aisstream 為 best-effort（它常擋雲端 IP），失敗不致命。
+* Secrets（Repo → Settings → Secrets）：`INGEST_TOKEN`、`CWA_API_KEY`、`AISSTREAM_API_KEY`、`WORKER_URL`。需要 Node ≥ 22（全域 `WebSocket`），所以 workflow 用 Node 22。
+* **限制：** GitHub 的排程是 best-effort，實際間隔常是 5–15 分鐘、尖峰時可能略過；排程只在預設分支執行；公開 repo 若 60 天無 commit 排程會被自動停用。最新資料時間：`/api/ships` → `updated`／`ageSec`／`mpbAgeSec`，`/api/quakes` → `time`。
