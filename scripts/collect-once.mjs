@@ -89,7 +89,8 @@ async function verify() {
   if (!(ships.count > 0)) fail("Worker /api/ships returns 0 ships");
 }
 
-const tasks = [["mpb", doMpb], ["cwa", doCwa], ["ais", doAis]];
+const tasks = [["cwa", doCwa], ["ais", doAis]];
+if (process.env.MPB !== "0") tasks.unshift(["mpb", doMpb]); // MPB=0: skip MPB (mpbais.motcmpb.gov.tw times out from GitHub-hosted runners, see docs/DATA-SOURCES.md)
 const res = await Promise.allSettled(tasks.map(([n, f]) => f().catch((e) => { if (n === "ais") { log("aisstream failed (non-fatal):", scrub(e.message)); summary.aisError = scrub(e.message); } else fail(n + ": " + e.message); })));
 await verify().catch((e) => fail("verify: " + e.message));
 if (process.env.GITHUB_STEP_SUMMARY) {
