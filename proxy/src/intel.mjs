@@ -197,7 +197,7 @@ export function plaPublic(P, now) {
   const events = mergeJs(js.events || [], js.details || {});
   return {
     time: now, updated: { mnd: mnd.okAt || null, js: js.okAt || null }, errors: { mnd: mnd.err || null, js: js.err || null },
-    mnd: { source: "國防部 MND", url: MND_BASE + "news/plaact", attribution: PLA_ATTRIBUTION.mnd, days },
+    mnd: { source: "國防部 MND", url: MND_BASE + "news/plaactlist", attribution: PLA_ATTRIBUTION.mnd, days },
     js: { source: "統合幕僚監部 (Japan Joint Staff)", url: JS_INDEX, licence: "PDL 1.0", attribution: PLA_ATTRIBUTION.js, events: events.slice(0, 40) },
     needPdf: needPdf(js.events || [], js.details || {}),
   };

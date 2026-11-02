@@ -37,7 +37,7 @@ export default {
     try {
       if (p === "/health") return json({ ok: true, service: "pla-intel", placement: request.headers.get("cf-placement") || null });
       if (p === "/mnd/list") {
-        const r = await get(MND_BASE + "news/plaact"); if (!r.ok) return json({ error: "MND list HTTP " + r.status }, 502);
+        const r = await get(MND_BASE + "news/plaactlist"); if (!r.ok) return json({ error: "MND list HTTP " + r.status }, 502);
         const days = parseMndList(await r.text()); if (!days.length) return json({ error: "MND list: no bulletins parsed (layout changed?)" }, 502);
         return json({ days });
       }
