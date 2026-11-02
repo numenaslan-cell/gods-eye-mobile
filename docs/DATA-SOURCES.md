@@ -66,6 +66,18 @@
 | **pla-tracker.skyfaring.net** `https://pla-tracker.skyfaring.net/data/records.csv`（**第三方**整理，原始資料來自**國防部**每日「共機、共艦動態」公布） | 前端直接 `fetch`（回應有 `access-control-allow-origin: *`，約 20 KB，快取 4 小時）。欄位：`date, aircraft_total, median_line_cross, cross_rate, aircraft_type, ships_total, activity_start, activity_end, special_event`（`special_event` 含多行引號文字，所以用完整的 CSV 解析器）。PLA DAILY 面板顯示最新一天的架次／逾越中線／艦艇數、近 7 日長條圖與「近 7 日平均 vs 前 7 日」趨勢；2 小時更新一次 | **非官方**、可能延遲或有誤，來源網站未見明確授權條款；面板與頁尾標示出處與「第三方整理，資料源自國防部」。不是預警 |
 | **海洋委員會海巡署（CGA）新聞 RSS** `https://www.cga.gov.tw/GipOpen/wSite/rss?ctNode=2116&mp=9997` | Worker `GET /api/cga`：在 Durable Object 內抓取（約 240 KB、65 則）並以字串解析，30 分鐘快取（失敗時回傳舊資料），只保留**標題含「海警」**的項目，另外把**內文提到「海警」**的項目標示為 `mention` 附在後面（實測 2026-11-01：65 則裡沒有任何標題含「海警」，4 則內文提到，所以只看標題清單會一直是空的） | 版權屬海洋委員會海巡署（RSS 內標示「版權來自：海洋委員會海巡署」），**僅限非商業使用**、須標示出處；連結只允許 `cga.gov.tw`。這是新聞稿，不是即時船位；即時船位請看 SHIPS 的 AIS CCG 啟發式 |
 
+## 官方共軍動態：國防部每日動態 + 日本統合幕僚監部（2026-11-03 起）/ Official PLA activity
+
+| 來源 | 內容 | 取得方式（實測 2026-11-03） | 條款 |
+|---|---|---|---|
+| **中華民國國防部** 「中共解放軍臺海周邊海、空域動態」 列表 `https://www.mnd.gov.tw/news/plaactlist`、內文 `https://www.mnd.gov.tw/news/plaact/<id>`、航跡示意圖 `https://www.mnd.gov.tw/NewUpload/YYYYMM/…jpg` | 每日（約 09:00 台北時間發布，統計 06:00→06:00）：共機架次（及「進入西南及東部空域／逾越中線」架次）、共艦艘數、**公務船**艘數、航跡示意圖 | **列表頁**一般 Worker 可抓；**內文頁**從一般 Cloudflare Worker／GitHub runner／日本放置的 Worker 會回 `403 Access denied.`，從 **`placement.region = "gcp:asia-east1"`（彰化）的 Worker 回 200**（無 key、無 JS、約 70 KB HTML、200–700 ms）。圖片連結只放連結，不內嵌 | 網站頁尾有「政府網站資料開放宣告」（我方理解為政府資料開放授權條款 第 1 版，**請以該頁為準**）；本 App 逐日數字原樣呈現並附出處連結。未對其網站做高頻抓取：列表 20 分鐘一次、內文每日一則 |
+| **防衛省・統合幕僚監部** 「報道発表資料」 `https://www.mod.go.jp/js/press/index.html`（約 1.7 MB，最新在最上面）與 `https://www.mod.go.jp/js/pdf/YYYY/pYYYYMMDD_NN.pdf` | 中國海軍艦艇／軍機動向：**標題**即含級別、海峽、航向（例「ルーヤンⅢ、フユ／沖縄本島－宮古島間北西進」）、機型（例「WZ-7／沖宮」）；**PDF 內文**含**艦番号（艦號）**、確認時間／地點、無人機、緊急発進 | 一般 Worker 與 GitHub runner 皆可。Worker 只讀 index 前 48 KB（串流）以符合 10 ms CPU；PDF 內嵌壓縮 CID 字型，Worker 內解不了，所以由 **GitHub Actions `pdftotext`** 解析（`scripts/pla-intel-pdf.mjs`），結果 POST 到 `/api/pla/ingest`。艦號→艦名用靜態表 `proxy/src/plahulls.mjs`（Wikidata CC0 + Wikipedia 級別表 CC BY-SA，`scripts/gen-plan-hulls.mjs` 產生，只存「型號→艦號→英文名」） | **公共データ利用規約 第1.0版（PDL 1.0）**：可複製、散布、改作、商用，須標示出典、改作須註明為加工。App 在 PLA 分頁與頁尾標示「出典：防衛省・統合幕僚監部…（加工して作成）」，並聲明非省方背書 |
+
+**架構：** 主 Worker 的 cron（每 2 分鐘喚醒 Hub）→ 透過 **service binding `INTEL`** 呼叫 `pla-intel`（放置於 `gcp:asia-east1`，**沒有 secret、沒有公開路由**，只有主 Worker 呼叫得到）取得 MND 列表／內文與 Joint Staff index（已解析成 JSON）→ Hub 節流（MND 列表 20 分鐘、Joint Staff 30 分鐘、每次最多補 3 則內文）→ 存在 Hub 的 DO storage → `GET /api/pla`（2 分鐘 edge 快取）。GitHub Actions（`pla-intel.yml`，每 30 分鐘）呼叫 `POST /api/pla/refresh`，再為新的 Joint Staff 公告下載 PDF（runner 連不上 mod.go.jp 時走 `GET /api/pla/pdf/:id` 由 Worker 代抓）→ `pdftotext` → `POST /api/pla/ingest`。兩條路任一條壞掉不會讓另一條停擺；**不依賴任何常駐機器**。
+**只有 Cloudflare 的 `scheduled` 沒有 placement**，所以放置的 `pla-intel` 只有 `fetch` handler，由主 Worker 以 service binding 呼叫（與 `mpb-fetcher` 同樣的限制與做法）。
+
+**「疑似共機」的 ICAO 先驗：** `0x7A1000–0x7A4FFF` 這段在 tar1090-db 快照（2026-11）裡 383 筆有 375 筆被標為軍用（Y-20、WZ-10、Mi-8、AS365、An-12/Y-8、Tu-16/H-6、Il-76…），整個 `0x780000–0x7BFFFF` 其餘約 7,200 筆只有 68 筆軍用。所以位址在這段就標「疑似」（理由會寫 `pla-block`），但這是**先驗不是辨識**；一般中國位址（國航等）單獨不標。另新增 `TU16`（轟-6 的 ICAO 型號）為 PLA 機型，`AN12`／`IL76`／`MI8`／`AS65` 等同時存在於民用的型號僅在中國位址下才算。
+
 ## 船舶 AIS、推播與過境預測的資料來源 / Ships (AIS), push alerts & pass predictions
 
 調查日期 / Researched: 2026-11-01（Asia/Taipei）。
@@ -80,7 +92,7 @@
 
 **架構 Architecture：** 瀏覽器 → `GET /api/ships`（自己的 Cloudflare Worker）→ Durable Object `Hub`（彙整後存入 DO storage、保留 30 分鐘；最多儲存 4,000 艘、回應最多 2,500 艘，優先順序：CCG 疑似 > 貨／油／客輪等 > 移動中的漁船／未知型別 > 靜止者）。資料來源：收集器（aisstream ＋ MPB）→ `POST /api/ships/ingest`（Bearer `INGEST_TOKEN`）；Worker 自己直連 `wss://stream.aisstream.io/v0/stream` 只是備援（目前會被 aisstream 中斷）。API key 是 Worker secret `AISSTREAM_API_KEY`，從不出現在前端。沒有 key、尚未部署或請求失敗時，前端自動顯示橘色 **DEMO DATA**（沿真實航道生成的示範船隻）。
 
-* 中國海警（CCG）判斷是**啟發式**：AIS 船名含 `HAIJING`／`HAI JING`／`ZHONGGUO HAIJIAN`／`CHINA COAST GUARD`（含無空格的 `CHINACOASTGUARD2302`）／`CCG nnnn`／`海警`（**名稱比對一律成立**），或「船型 55（執法）＋中國 MMSI 前綴 412/413/414」（**僅靠前綴的比對**）。僅靠前綴時：`Ship_and_Cargo_Type 30`（漁船）一律排除，名稱含 `HAIXUN`（海事局巡邏船，同為 type 55）也排除。AIS 沒有「海警」欄位，所以可能漏報或誤報；介面與推播內文都標示「非官方確認」。
+* **（2026-11-03 更新，規則以此為準）** 中國海警（CCG）判斷規則 `ccgWhy()`（`proxy/src/ais.mjs`）：① 名稱：`HAIJING`／`ZHONGGUO HAIJIAN`／`CHINA COAST GUARD`（含 `CHINACOASTGUARD2302`）／`CCG nnnn`／`海警`；② `block`：MMSI 以 **413875** 開頭（實測海警船常用的區段，**觀察而非官方配賦**；漁船 type 30 與名稱含 HAIXUN 者不套用）；③ `known`：這個 MMSI 先前曾用海警船名出現過（Hub 把 MMSI 記在 KV `ccg:known`，最多 400 筆、180 天，寫入節流為 5 分鐘一次、僅在出現新 MMSI 或 3 天更新一次時寫）。**只有「type 55 + 412/413/414 前綴」而無上述證據的船不再叫海警**，改為較保守的「政府船舶」（`isGov()`，琥珀色、無警示標籤、不推播），例如 `XIA MEN HAI YANG 01`、HAIXUN 巡邏船。船名中的艦號可解出所屬分局（`decodeCcgHull()`：5 碼＝省級分局，例如 14530→福建；4 碼＝直屬局，例如 2xxx→寧波（二局）、3xxx→廣州、5xxx→三亞…）——依公開的編號規則，僅供參考。以下為舊版說明：AIS 船名含 `HAIJING`／`HAI JING`／`ZHONGGUO HAIJIAN`／`CHINA COAST GUARD`（含無空格的 `CHINACOASTGUARD2302`）／`CCG nnnn`／`海警`（**名稱比對一律成立**），或「船型 55（執法）＋中國 MMSI 前綴 412/413/414」（**僅靠前綴的比對**）。僅靠前綴時：`Ship_and_Cargo_Type 30`（漁船）一律排除，名稱含 `HAIXUN`（海事局巡邏船，同為 type 55）也排除。AIS 沒有「海警」欄位，所以可能漏報或誤報；介面與推播內文都標示「非官方確認」。
 * 地震：USGS `4.5_day.geojson`（公開、無 key），範圍 20–27.5°N、118–124.5°E、M ≥ 4.5、6 小時內的新事件。
 * ISS／衛星過境：CelesTrak TLE（`stations`、`visual`；Worker 端只抓 ISS 的單筆 TLE，快取 6 小時）＋ satellite.js (SGP4)。「可能看得到」＝最高仰角 ≥ 10°、衛星受日照（圓柱地影模型）且觀測者太陽高度 ≤ −6°。這是預測，不保證（未計亮度、天氣、TLE 誤差）。
 * Web Push：標準 Web Push（RFC 8030/8291/8292）；VAPID 私鑰只存在 Worker secret `VAPID_PRIVATE_KEY`。訂閱資料存 Cloudflare KV；ISS 提醒才會儲存「四捨五入到約 1 公里」的位置。iOS／iPadOS 需 16.4+ 且必須「加入主畫面」後從圖示開啟。

@@ -151,7 +151,7 @@ const CCG_DIRECT = { 1: ["上海", "Shanghai (Bureau 1)"], 2: ["寧波", "Ningbo
 /** AIS name -> CCG hull number string, or null. CHINACOASTGUARD14530, "CHINA COAST GUARD 2901", "HAI JING 2102", "CCG 3305", 海警2901. */
 export function ccgHull(name) {
   const n = String(name || "").toUpperCase();
-  const m = /CHINA ?COAST ?GUARD ?(\d{3,5})|(?:HAI ?JING|CCG) ?(\d{3,5})/.exec(n) || /海警\s*(\d{3,5})/.exec(String(name || ""));
+  const m = /CHINA ?COAST ?GUAR[D]? ?(\d{3,5})|(?:HAI ?JING|CCG) ?(\d{3,5})/.exec(n) || /海警\s*(\d{3,5})/.exec(String(name || ""));
   return m ? m[1] || m[2] : null;
 }
 /** Hull number -> home bureau per the numbering scheme (5 digits: province bureau by the first two digits; 4 digits: directly-subordinate bureau by the first digit). Descriptive only. */

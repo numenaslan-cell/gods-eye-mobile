@@ -40,6 +40,7 @@
     // Taiwan CWA (交通部中央氣象署) extras: only populated when the Worker has the owner's CWA_API_KEY secret (GET /quakes says enabled:true); otherwise USGS only
     // PLA daily activity (third-party CSV built from Taiwan MND daily reports) and CGA (海巡署) RSS items about the China Coast Guard (海警)
     pla: { status: "loading", error: "", latest: null, days: [], avg7: null, prev7: null, updated: 0, rev: 0, source: "pla-tracker.skyfaring.net" },
+    intel: { status: "loading", error: "", mnd: [], js: [], mndAt: 0, jsAt: 0, needPdf: 0, updated: 0, rev: 0, source: "國防部 MND + 統合幕僚監部 (via own Worker)" },
     cga: { status: "loading", error: "", items: [], scanned: 0, updated: 0, rev: 0, source: "海巡署 CGA RSS" },
     cwa: { enabled: false, checked: 0, typhoons: [], warnings: [], updated: 0 },
     sats: {
@@ -187,6 +188,7 @@
     var t = sh.type || 0;
     if (sh.ccg) return "ccg";
     if (sh.plan) return "plan";
+    if (sh.gov) return "gov";
     if (t >= 70 && t < 80) return "cargo";
     if (t >= 80 && t < 90) return "tanker";
     if (t >= 60 && t < 70) return "pax";
@@ -198,9 +200,9 @@
     var o = {
       id: s.mmsi, mmsi: s.mmsi, name: s.name || ("MMSI " + s.mmsi), hasName: !!s.name,
       lat: s.lat, lon: s.lon, sogKt: s.sog, cog: s.cog, hdg: course, vMs: moving ? s.sog * 0.514444 : 0,
-      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, plan: !!s.plan, src: s.src || "ais", t: now - (s.ageSec || 0) * 1000,
+      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, plan: !!s.plan, gov: !!s.gov, ccgBy: s.ccgBy || "", hull: s.hull || "", bureau: s.bureau || "", bureauKind: s.bureauKind || "", src: s.src || "ais", t: now - (s.ageSec || 0) * 1000,
     };
-    o.typeLabel = o.ccg ? "CCG (HEURISTIC)" : o.plan ? "PLAN (HEURISTIC)" : shipTypeLabel(o.type); o.cls = shipClass(o);
+    o.typeLabel = o.ccg ? "CCG (HEURISTIC)" : o.plan ? "PLAN (HEURISTIC)" : o.gov ? "GOV'T VESSEL (AIS TYPE 55)" : shipTypeLabel(o.type); o.cls = shipClass(o);
     return o;
   }
   function parseShips(json) {
@@ -543,13 +545,27 @@
     });
   }
 
+  // Official PLA-activity intel: Taiwan MND daily bulletin + Japan Joint Staff releases, scraped by the pla-intel Worker and served by the main Worker (/api/pla).
+  function pollIntel() {
+    var c = state.intel;
+    if (!cfg.proxyBase) { c.status = "error"; c.error = "Worker not configured"; c.rev++; emit("intel"); return; }
+    fetchTimeout(cfg.proxyBase + "/pla", 15000, { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status === 404 ? "route not deployed yet" : "HTTP " + r.status); return r.json(); }).then(function (j) {
+      c.status = "live"; c.error = ""; c.mnd = (j.mnd && j.mnd.days) || []; c.js = (j.js && j.js.events) || []; c.mndAt = (j.updated && j.updated.mnd) || 0; c.jsAt = (j.updated && j.updated.js) || 0;
+      c.errors = j.errors || {}; c.needPdf = (j.needPdf || []).length; c.updated = Date.now(); c.rev++; emit("intel");
+      setTimeout(pollIntel, 15 * 60000);
+    }).catch(function (err) {
+      c.status = c.mnd.length || c.js.length ? "live" : "error"; c.error = err && err.name === "AbortError" ? "timeout" : (err && err.message) || String(err); c.rev++; emit("intel");
+      setTimeout(pollIntel, 10 * 60000);
+    });
+  }
+
   /* -------------------------------------------------------------------- start */
   var started = false;
   function start() {
     if (started) return; started = true;
     if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); setShips("demo", demoShips(), "demo mode (?demo=1)"); setQuakes("demo", demoQuakes(), "demo mode (?demo=1)"); }
     else { pollFlights(); pollShips(); pollQuakes(); }
-    pollPla(); pollCga();
+    pollPla(); pollCga(); pollIntel();
     startSats();
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.flights.nextTry - 1000) pollFlights();

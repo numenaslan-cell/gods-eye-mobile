@@ -30,6 +30,12 @@ The endpoint is undocumented and has no published licence — keep the polling r
 > **2026-11-03 update — MPB no longer needs a machine:** the `mpb-fetcher` Worker (`workers/mpb-fetcher/`, placed at `gcp:asia-east1`, service binding `PROXY` → this Worker, secret `INGEST_TOKEN`)
 > fetches MPB and posts to `/api/ships/ingest`; GitHub Actions (`.github/workflows/collector.yml`) triggers it every 5 min. See `workers/mpb-fetcher/README.md`. `scripts/ais-collector.mjs` is only a manual fallback.
 
+## PLA intel (MND daily + Japan Joint Staff) — `pla-intel` Worker, service binding `INTEL` (2026-11-03)
+`workers/pla-intel/` (`placement.region = "gcp:asia-east1"`, **no secrets, workers.dev route disabled**) is the only thing that can read `mnd.gov.tw/news/plaact/<id>` (403 from every other egress); it also reads mod.go.jp.
+The main Worker needs **one extra binding**: `{ "type": "service", "name": "INTEL", "service": "pla-intel", "environment": "production" }` (upload with `keep_bindings: ["secret_text"]` so the secrets survive; no migrations part when redeploying).
+The Hub cron refreshes it (no extra cron). GitHub Actions `pla-intel.yml` (every 30 min, secrets `INGEST_TOKEN`, `WORKER_URL` already exist) adds PDF-derived hull numbers via `POST /api/pla/ingest`. Routes: `GET /api/pla`, Bearer: `POST /api/pla/refresh|ingest`, `GET /api/pla/pdf/:id`. Details: `workers/pla-intel/README.md`.
+Also stored: KV key `ccg:known` (remembered CCG MMSIs). Deploy order: `pla-intel` first, then the main Worker.
+
 ## What you need to provide (2 things)
 
 | What | Where it comes from | Where it goes |
