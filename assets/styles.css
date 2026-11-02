@@ -201,3 +201,7 @@ small { font-size: 9px; }
 .ge-cga .ge-pass-main { flex: 1 1 auto; align-items: flex-start; text-align: left; white-space: normal; }
 .ge-cga .ge-pass-main b { font-weight: 600; font-size: 11px; line-height: 1.3; white-space: normal; }
 .ge-cga .ge-pass-main small { white-space: normal; line-height: 1.3; font-size: 9.5px; }
+
+/* suspected PLA aircraft (heuristic) */
+.ge-plawarn b { color: #ff6b61; }
+.ge-plaauth { border-left: 2px solid var(--amber, #ffb020); padding-left: 8px; color: rgba(255,255,255,.8); }

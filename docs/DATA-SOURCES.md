@@ -21,6 +21,7 @@
 | [OpenSky Network](https://opensky-network.org)（最後手段） | `https://opensky-network.org/api/states/all`（匿名每日約 400 credits） | 見 OpenSky 使用條款（研究／非商業） |
 
 * 地面航班（`alt_baro = "ground"`）與沒有位置的目標會被丟掉；高度＝氣壓高度（ft），缺值時用幾何高度；國別由 ICAO 24-bit 位址區段推得（小型對照表，未知則空白）。
+* **疑似 PLA 航空器（⚠️ PLA / 疑似）**：Worker 在 adsb.lol / adsb.fi 的原始物件上套用保守的啟發式（`proxy/src/flights.mjs` 的 `plaSuspect`）：`dbFlags` bit 0（資料庫標為軍用）∧ 中國 ICAO 位址區段 0x780000–0x7BFFFF（香港 0x789xxx、台灣 0x899xxx 排除），或軍用旗標／中國位址 ∧ 典型 PLA 機型（J-10/11/15/16/20/35、JH-7、H-6、Y-8/9/20、KJ-xxx、Z-8/9/10/18/19/20、WZ-、GJ-；Su-30/35 僅在中國位址時算）或 PLA 風格呼號（PLA…／CHN<數字>）。**只有位址、或只有民航呼號（CCA/CES/CSN…）永遠不會被標記**。命中者在回應中帶 `pla: true` 與 `plaWhy`，UI 以紅色標記、「⚠️ 疑似 PLA」徽章與說明顯示。這只是給人看的提示，不是辨識：多數共機根本不發 ADS-B，**官方數字以國防部每日公布為準**（PLA 分頁）。
 * Worker 回應含 `source`（實際用到的來源，如 `adsb.lol` 或 `adsb.lol+adsb.fi`）、`partial`（有哪些來源失敗）。UI 的 FLT 徽章與面板會顯示實際來源。
 
 ## 中央氣象署（CWA）地震／颱風／警特報 — 需要使用者自己的 API key
@@ -38,6 +39,19 @@
 * **重要：CWA 的 WAF 會拒絕 Cloudflare 出口 IP**（從 Worker 直接呼叫回 HTTP 200 但內容是 HTML「Request Rejected」，與 aisstream 的情況類似）。所以實際資料流是：箱子上的收集器 `scripts/ais-collector.mjs`（環境變數 `CWA_API_KEY`，每 `CWA_SEC`＝300 秒）呼叫 CWA → 正規化 → `POST /api/cwa/ingest`（Bearer `INGEST_TOKEN`）→ Hub DO 儲存（20 分鐘內視為新鮮）→ `/api/quakes|typhoon|warnings`。Worker secret `CWA_API_KEY` 仍設定著，當收集器停止（資料超過 20 分鐘）時 Worker 會嘗試直接抓取（目前會被 WAF 擋，之後若 CWA 放行即自動生效），失敗則回傳舊資料。收集器停止且無資料時，前端自動退回 USGS。
 * CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內處理（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
 * 驗證狀況（2026-11-01）：四個資料集都用使用者自己的 key 對真實 API 測試過；解析以**真實回應樣本**（`proxy/test/fixtures/`，已縮減）做單元測試。注意：颱風資料集的實際 JSON 欄位是 PascalCase（`TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[]`、`CoordinateLongitude/Latitude`），警特報的 `validTime` 沒有時區（視為台北時間 +08:00）；解析器兩種大小寫都接受。
+
+## 地球影像 LOD（放大時的高解析圖磚）/ Globe imagery level-of-detail
+
+整顆地球的底圖仍是內嵌的 NASA Blue Marble（日 4096×2048）／Black Marble（夜 2048×1024）。鏡頭拉近（距離 ≲ 2.1 個地球半徑）時，App 會在可視範圍上疊加 **NASA GIBS WMTS** 圖磚（EPSG:4326、`500m` tile matrix set、512 px、z4–z7，即每塊 18°–2.25°；z7 約 0.0044°/px ≈ 490 m）：
+
+| 圖層 | 用途 | 網址範本 / 條款 |
+|---|---|---|
+| `BlueMarble_ShadedRelief_Bathymetry` | 日間 / THERM 的陸地與海底地形 | `https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{z}/{row}/{col}.jpeg`；CORS `*`，可快取 3 天 |
+| `VIIRS_CityLights_2012` | 夜間 / NVG 的城市燈光 | 同上，圖層換成 `VIIRS_CityLights_2012`；伺服器回 `no-store`，所以只保留在記憶體 LRU |
+
+* 授權：NASA EOSDIS GIBS 影像可自由使用（NASA media usage guidelines，無需授權），請致謝：*"We acknowledge the use of imagery provided by services from NASA's Global Imagery Browse Services (GIBS), part of NASA's Earth Observing System Data and Information System (EOSDIS)."* UI 頁尾有 “NASA GIBS imagery” 連結。未使用 ESRI World Imagery（其條款對非商業作品集也要求另外標示／限制）。
+* 手機效能：最多同時 18 塊、同時 6 個請求、最多 40 張貼圖的 LRU（淘汰時 `dispose()`）、被移出視野的圖磚網格立即釋放；白天只抓日圖、夜晚只抓夜圖、晨昏線附近兩者都抓；模式（DAY/NVG/THERM）與晨昏線著色與底圖共用同一段 shader。renderer 使用 `devicePixelRatio`（上限 3，若平均幀時間 > 42 ms 會自動降到 2 → 1.5）、各向異性過濾（≤16）與 mipmap、貼圖 `colorSpace = sRGB`。
+* 失敗（離線、被擋、404）時單塊圖磚退回底圖，60 秒後才重試。
 
 ## 共軍動態日報（PLA DAILY）與海巡署新聞（CCG 海警）
 

@@ -92,7 +92,7 @@ scripts/gen-vapid.mjs   產生 VAPID 金鑰
 * 航班資料：[adsb.lol](https://adsb.lol)（© adsb.lol contributors，ODbL 1.0）、[adsb.fi](https://adsb.fi) Open Data（僅限非商業）、[OpenSky Network](https://opensky-network.org)（Schäfer et al., IPSN 2014）
 * 衛星軌道資料：[CelesTrak](https://celestrak.org)（Dr. T.S. Kelso）
 * SGP4：[satellite.js](https://github.com/shashwatak/satellite-js)（MIT）
-* 地球貼圖：NASA Earth Observatory — Blue Marble Next Generation、Black Marble
+* 地球貼圖：NASA Earth Observatory — Blue Marble Next Generation、Black Marble；放大時的高解析圖磚：NASA GIBS（BlueMarble_ShadedRelief_Bathymetry、VIIRS_CityLights_2012），詳見 docs/DATA-SOURCES.md
 * [three.js](https://threejs.org)、[React](https://react.dev)、[lucide](https://lucide.dev)（皆 MIT）
 
 ## 授權

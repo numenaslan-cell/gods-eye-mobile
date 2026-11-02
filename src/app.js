@@ -17,7 +17,7 @@
     AmbientLight: GZ, DirectionalLight: LZ, TextureLoader: YZ, SphereGeometry: _Y, ShaderMaterial: RM,
     Mesh: LM, Group: Gw, ConeGeometry: zK, MeshBasicMaterial: tY, BufferGeometry: KM,
     Float32BufferAttribute: xE, LineBasicMaterial: JK, Line: AZ, PointsMaterial: qK, Points: EZ,
-    BackSide: UM, SRGB: IK, ACES: fG, Repeat: gG,
+    BackSide: UM, SRGB: IK, ACES: fG, Repeat: gG, Texture: $E,
   };
   var TEX = window.GODS_EYE_TEXTURES || {};
   var DAY_TEX = TEX.day, NIGHT_TEX = TEX.night; // NASA Blue Marble / Black Marble (assets/textures/*.jpg), inlined by build.mjs
@@ -26,6 +26,191 @@
   var Data = window.GodsEyeData;
   var R_KM = 6371;
   var DEG = Math.PI / 180;
+
+
+  /* ---- earth shading shared by the base globe and the hi-res tile patches ---- */
+  var SHADE_GLSL = [
+    "vec3 shadeEarth(vec3 dayRaw, vec3 nightRaw, vec3 nrm, vec3 sunDir, float brightness, float mode){",
+    "  float sun = dot(normalize(nrm), normalize(sunDir));", // world-space normal vs world-space sun
+    "  float dayMix = smoothstep(-0.25, 0.45, sun);",
+    "  vec3 dayC = dayRaw;",
+    "  float dl = dot(dayC, vec3(0.299,0.587,0.114));",
+    "  dayC = (dayC + vec3(0.025,0.07,0.17) * (1.0 - smoothstep(0.0, 0.22, dl))) * brightness;", // lift the near-black deep-ocean pixels
+    "  vec3 nightC = nightRaw;",
+    "  vec3 color = mix(nightC * 0.9, dayC, dayMix);",
+    "  if(mode > 0.5 && mode < 1.5){ float lum = dot(color, vec3(0.299,0.587,0.114)); color = vec3(lum*0.2, lum*1.1, lum*0.3); }",
+    "  if(mode > 1.5){ float lum = dot(dayC, vec3(0.3,0.59,0.11)); color = vec3(1.0 - lum) * vec3(1.0,0.6,0.2); color += nightC * 0.5; }",
+    "  return color;",
+    "}",
+  ].join("\n");
+
+  /* ---- LOD: NASA GIBS WMTS tile overlay ---------------------------------------------------------------
+     When the camera is close, the visible part of the globe is covered with 512px tiles from NASA GIBS
+     (EPSG:4326, "500m" matrix set, z4..z7 = 18deg..2.25deg per tile). Day = Blue Marble Shaded Relief +
+     Bathymetry, night = VIIRS City Lights 2012. Each tile is a small SphereGeometry patch drawn just above
+     the base globe with the same shading (day/night terminator, NVG, THERM). Tile count is capped, textures
+     live in an LRU cache and are disposed on eviction. */
+  var GIBS_BASE = "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/";
+  var GIBS_DAY = "BlueMarble_ShadedRelief_Bathymetry", GIBS_NIGHT = "VIIRS_CityLights_2012";
+  var TILE_MIN_Z = 4, TILE_MAX_Z = 7, TILE_MAX_VISIBLE = 18, TILE_MAX_TEX = 40, TILE_MAX_INFLIGHT = 6;
+  var TILE_MAX_DIST = 2.1; // camera distance (globe radii) beyond which the 4096px base texture is enough
+
+  // Pure helper (unit-testable): which tiles cover the view, and at which zoom level.
+  // lat0/lon0: view centre in degrees; d: camera distance in globe radii; fovV/aspect: camera; px: canvas width in device px;
+  // shiftFrac: view-offset (HUD shift) as a fraction of the canvas height.
+  function groundHalfAngle(d, alpha) { // central angle (rad) from sub-camera point to where a ray at `alpha` off-axis hits the sphere
+    var x = d * Math.sin(alpha);
+    if (x >= 1) return Math.PI / 2;
+    return Math.asin(x) - alpha;
+  }
+  function planTiles(lat0, lon0, d, fovVdeg, aspect, px, shiftFrac, maxTiles) {
+    if (d > TILE_MAX_DIST) return null;
+    var tv = Math.tan(fovVdeg * DEG / 2), th = tv * aspect;
+    var hh = groundHalfAngle(d, Math.atan(tv * (1 + 2 * Math.abs(shiftFrac || 0)))) / DEG * 1.1;
+    var hw = groundHalfAngle(d, Math.atan(th)) / DEG * 1.1;
+    if (hw < 0.01) hw = 0.01;
+    var dpp = (2 * hw) / Math.max(1, px); // degrees per device pixel across the view
+    var z = Math.ceil(Math.log2(0.5625 / dpp)); z = Math.max(TILE_MIN_Z, Math.min(TILE_MAX_Z, z));
+    if (Math.abs(lat0) > 75) return null;
+    for (; z >= TILE_MIN_Z; z--) {
+      var sz = 288 / Math.pow(2, z), nc = Math.round(360 / sz), nr = Math.round(180 / sz), out = [];
+      var cosL = Math.max(0.25, Math.cos(Math.min(80, Math.abs(lat0) + hh) * DEG));
+      var lonHalf = Math.min(180, hw / cosL);
+      var r0 = Math.max(0, Math.floor((90 - Math.min(90, lat0 + hh)) / sz)), r1 = Math.min(nr - 1, Math.floor((90 - Math.max(-90, lat0 - hh)) / sz));
+      var c0 = Math.floor((lon0 - lonHalf + 180) / sz), c1 = Math.floor((lon0 + lonHalf + 180) / sz);
+      for (var r = r0; r <= r1; r++) for (var c = c0; c <= c1; c++) {
+        var cc = ((c % nc) + nc) % nc;
+        out.push({ z: z, r: r, c: cc, lat1: 90 - r * sz, lat0: 90 - (r + 1) * sz, lon0: -180 + c * sz, lon1: -180 + (c + 1) * sz,
+          dist: Math.abs(90 - (r + 0.5) * sz - lat0) + Math.abs(-180 + (c + 0.5) * sz - lon0) * cosL });
+      }
+      if (out.length <= maxTiles) { out.sort(function (a, b) { return a.dist - b.dist; }); return out; }
+    }
+    return null;
+  }
+
+  function createTileLayer(opts) {
+    var scene = opts.scene, renderer = opts.renderer, camera = opts.camera, uniforms = opts.uniforms;
+    var group = new T.Group(); scene.add(group);
+    var cache = {}, order = [];   // key -> {tex|null, state, t}; order = LRU of keys with textures
+    var live = {};                // tile key -> {mesh, mat, geo}
+    var inflight = 0, queue = [], stats = { visible: 0, z: 0, loaded: 0, requested: 0 };
+    var maxAniso = Math.min(8, (renderer.capabilities && renderer.capabilities.getMaxAnisotropy && renderer.capabilities.getMaxAnisotropy()) || 4);
+    var lastPlanAt = 0, lastSig = "", sigWanted = {};
+
+    function url(layer, t) { return GIBS_BASE + layer + "/default/500m/" + t.z + "/" + t.r + "/" + t.c + ".jpeg"; }
+    function ckey(layer, t) { return layer + "/" + t.z + "/" + t.r + "/" + t.c; }
+    function touch(k) { var i = order.indexOf(k); if (i >= 0) order.splice(i, 1); order.push(k); }
+    function evict() {
+      while (order.length > TILE_MAX_TEX) {
+        var k = order.shift(), e = cache[k];
+        if (e && e.tex) e.tex.dispose();
+        delete cache[k];
+      }
+    }
+    function pump() {
+      while (inflight < TILE_MAX_INFLIGHT && queue.length) {
+        var job = queue.shift(), e = cache[job.key];
+        if (!e || e.state !== "queued" || !sigWanted[job.key]) { if (e && e.state === "queued") delete cache[job.key]; continue; }
+        start(job.key, job.src);
+      }
+    }
+    function start(key, src) {
+      var e = cache[key]; e.state = "loading"; inflight++;
+      var img = new Image(); img.crossOrigin = "anonymous"; e.img = img;
+      function done(ok) {
+        inflight--; e.img = null;
+        if (ok) {
+          var tex = new T.Texture(img); tex.colorSpace = T.SRGB; tex.anisotropy = maxAniso; tex.needsUpdate = true;
+          e.tex = tex; e.state = "ready"; touch(key); stats.loaded++; evict();
+        } else { e.state = "failed"; e.t = Date.now(); }
+        pump();
+      }
+      img.onload = function () { (img.decode ? img.decode().catch(function () {}) : Promise.resolve()).then(function () { done(true); }); };
+      img.onerror = function () { done(false); };
+      img.src = src;
+    }
+    function want(layer, t) {
+      var key = ckey(layer, t); sigWanted[key] = 1;
+      var e = cache[key];
+      if (e) { if (e.state === "failed" && Date.now() - e.t > 60000) { delete cache[key]; e = null; } else { if (e.tex) touch(key); return e; } }
+      stats.requested++;
+      cache[key] = e = { state: "queued", tex: null };
+      queue.push({ key: key, src: url(layer, t) });
+      return e;
+    }
+    function makeMesh(t) {
+      var segs = Math.max(6, Math.min(32, Math.round((t.lat1 - t.lat0) / 0.35)));
+      var geo = new T.SphereGeometry(1.0006, segs, segs, (t.lon0 + 180) * DEG, (t.lon1 - t.lon0) * DEG, (90 - t.lat1) * DEG, (t.lat1 - t.lat0) * DEG);
+      var mat = new T.ShaderMaterial({
+        transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+        uniforms: {
+          dayMap: uniforms.dayMap, nightMap: uniforms.nightMap, sunDir: uniforms.sunDir, brightness: uniforms.brightness, mode: uniforms.mode,
+          dayTile: { value: null }, nightTile: { value: null }, hasDay: { value: 0 }, hasNight: { value: 0 }, fade: { value: 0 },
+        },
+        vertexShader: "varying vec2 vUv; varying vec2 vG; varying vec3 vNormal; void main(){ vUv = uv; vNormal = normalize(mat3(modelMatrix) * normal);" +
+          " float ph = atan(position.z, -position.x); if(ph < 0.0) ph += 6.2831853; vG = vec2(ph / 6.2831853, asin(clamp(position.y / length(position), -1.0, 1.0)) / 3.14159265 + 0.5);" +
+          " gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
+        fragmentShader: [
+          "uniform sampler2D dayMap; uniform sampler2D nightMap; uniform sampler2D dayTile; uniform sampler2D nightTile;",
+          "uniform vec3 sunDir; uniform float brightness; uniform float mode; uniform float hasDay; uniform float hasNight; uniform float fade;",
+          "varying vec2 vUv; varying vec2 vG; varying vec3 vNormal;",
+          SHADE_GLSL,
+          "void main(){",
+          "  vec3 dayRaw = hasDay > 0.5 ? texture2D(dayTile, vUv).rgb : texture2D(dayMap, vG).rgb;",
+          "  vec3 nightRaw = hasNight > 0.5 ? texture2D(nightTile, vUv).rgb : texture2D(nightMap, vG).rgb;",
+          "  gl_FragColor = vec4(shadeEarth(dayRaw, nightRaw, vNormal, sunDir, brightness, mode), fade);",
+          "}",
+        ].join("\n"),
+      });
+      var mesh = new T.Mesh(geo, mat); mesh.frustumCulled = false; mesh.renderOrder = 1; mesh.visible = false;
+      group.add(mesh);
+      return { mesh: mesh, mat: mat, geo: geo, t: t, born: 0 };
+    }
+    function dropTile(k) { var o = live[k]; group.remove(o.mesh); o.geo.dispose(); o.mat.dispose(); delete live[k]; }
+
+    // call every frame; cheap early-out unless the camera moved.
+    function update(now, mode, sunDirVec, w, hgt, shiftPx) {
+      now = performance.now(); // monotonic: fades/throttle must not depend on the wall clock
+      var dist = camera.position.length(), cam = camera.position;
+      var sig = Math.round(dist * 200) + "|" + Math.round(cam.x * 800) + "|" + Math.round(cam.y * 800) + "|" + Math.round(cam.z * 800) + "|" + mode;
+      if (sig !== lastSig && now - lastPlanAt > 220) {
+        lastPlanAt = now; lastSig = sig; sigWanted = {};
+        var lat0 = Math.asin(Math.max(-1, Math.min(1, cam.y / dist))) / DEG, ph = Math.atan2(cam.z, -cam.x); if (ph < 0) ph += 2 * Math.PI;
+        var lon0 = ph / DEG - 180;
+        var px = w * renderer.getPixelRatio();
+        var plan = planTiles(lat0, lon0, dist, camera.fov, camera.aspect, px, shiftPx / Math.max(1, hgt), TILE_MAX_VISIBLE);
+        var keep = {};
+        stats.visible = plan ? plan.length : 0; stats.z = plan && plan.length ? plan[0].z : 0;
+        if (plan) plan.forEach(function (t) {
+          var k = t.z + "/" + t.r + "/" + t.c; keep[k] = 1;
+          var o = live[k] || (live[k] = makeMesh(t));
+          var cl = (t.lat0 + t.lat1) / 2, cn = (t.lon0 + t.lon1) / 2, v = latLonToVec(cl, cn, 1);
+          var sd = v.x * sunDirVec.x + v.y * sunDirVec.y + v.z * sunDirVec.z, any = mode !== "DAY";
+          o.dayE = (sd > -0.5 || any) ? want(GIBS_DAY, t) : null;
+          o.nightE = (sd < 0.55 || any) ? want(GIBS_NIGHT, t) : null;
+        });
+        Object.keys(live).forEach(function (k) { if (!keep[k]) dropTile(k); });
+        // cancel queued work that is no longer wanted
+        queue = queue.filter(function (j) { return sigWanted[j.key]; });
+        pump();
+      }
+      Object.keys(live).forEach(function (k) {
+        var o = live[k], u = o.mat.uniforms, de = o.dayE, ne = o.nightE;
+        var hd = de && de.tex ? 1 : 0, hn = ne && ne.tex ? 1 : 0;
+        if (u.hasDay.value !== hd) { u.hasDay.value = hd; u.dayTile.value = hd ? de.tex : null; }
+        if (u.hasNight.value !== hn) { u.hasNight.value = hn; u.nightTile.value = hn ? ne.tex : null; }
+        var needBoth = (de && !hd && de.state !== "failed") || (ne && !hn && ne.state !== "failed"); // wait for the textures this tile needs before showing it (no flash of base map)
+        if (!needBoth && (hd || hn)) { if (!o.born) o.born = now; u.fade.value = Math.min(1, (now - o.born) / 350); o.mesh.visible = true; }
+        else if (!o.born) o.mesh.visible = false;
+      });
+    }
+    function dispose() {
+      Object.keys(live).forEach(dropTile);
+      Object.keys(cache).forEach(function (k) { var e = cache[k]; if (e.img) e.img.src = ""; if (e.tex) e.tex.dispose(); });
+      cache = {}; order = []; queue = []; scene.remove(group);
+    }
+    return { update: update, dispose: dispose, stats: stats, group: group };
+  }
 
   /* ---- tiny JSX-less helper -------------------------------------------------- */
   function h(type, props) {
@@ -217,6 +402,7 @@
     var sList = ships.list;
     var selShip = selShipId ? sList.find(function (x) { return x.id === selShipId; }) || null : null;
     var ccgList = sList.filter(function (x) { return x.ccg; });
+    var plaAir = list.filter(function (x) { return x.pla; });
     var selPass = selPassKey ? passes.list.find(function (x) { return x.key === selPassKey; }) || null : null;
     var pushIssActive = !!(pushInfo && pushInfo.subscribed && pushInfo.prefs && pushInfo.prefs.iss);
 
@@ -256,6 +442,12 @@
       else { setSFollow(true); setFollow(false); focusRef.current = { kind: "ship", id: selShip.id }; }
     }
     actionsRef.current = { selectFlight: selectFlight, selectShip: selectShip, selectQuake: selectQuake };
+    function cyclePla() {
+      if (!plaAir.length) return;
+      var i = plaAir.findIndex(function (x) { return x.id === selId; });
+      var n = plaAir[(i + 1) % plaAir.length];
+      setSelId(n.id); setSFollow(false); setFollow(true); focusRef.current = { kind: "flight", id: n.id };
+    }
     function cycle(dir) {
       if (!list.length) return;
       var n = (selIdx + dir + list.length) % list.length;
@@ -448,7 +640,8 @@
       var scene = new T.Scene();
       scene.background = new T.Color(0x02060a);
       var renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      var dprCap = 3, maxDpr = function () { return Math.min(window.devicePixelRatio || 1, dprCap); };
+      renderer.setPixelRatio(maxDpr());
       renderer.outputColorSpace = T.SRGB;
       renderer.toneMapping = T.ACES;
       var camera = new T.PerspectiveCamera(28, 1, 0.05, 100);
@@ -467,7 +660,8 @@
 
       var loader = new T.TextureLoader();
       var dayMap = loader.load(DAY_TEX), nightMap = loader.load(NIGHT_TEX);
-      [dayMap, nightMap].forEach(function (t) { t.colorSpace = T.SRGB; t.anisotropy = 8; t.wrapS = t.wrapT = T.Repeat; });
+      var aniso = Math.min(16, (renderer.capabilities && renderer.capabilities.getMaxAnisotropy && renderer.capabilities.getMaxAnisotropy()) || 8);
+      [dayMap, nightMap].forEach(function (t) { t.colorSpace = T.SRGB; t.anisotropy = aniso; t.generateMipmaps = true; t.wrapS = t.wrapT = T.Repeat; });
       var earthMat = new T.ShaderMaterial({
         uniforms: {
           dayMap: { value: dayMap }, nightMap: { value: nightMap }, sunDir: { value: sunDirection(new Date()) },
@@ -477,21 +671,14 @@
         fragmentShader: [
           "uniform sampler2D dayMap; uniform sampler2D nightMap; uniform vec3 sunDir; uniform float brightness; uniform float mode;",
           "varying vec2 vUv; varying vec3 vNormal;",
+          SHADE_GLSL,
           "void main(){",
-          "  float sun = dot(normalize(vNormal), normalize(sunDir));", // world-space normal vs world-space sun
-          "  float dayMix = smoothstep(-0.25, 0.45, sun);",
-          "  vec3 dayC = texture2D(dayMap, vUv).rgb;",
-          "  float dl = dot(dayC, vec3(0.299,0.587,0.114));",
-          "  dayC = (dayC + vec3(0.025,0.07,0.17) * (1.0 - smoothstep(0.0, 0.22, dl))) * brightness;", // lift the near-black deep-ocean pixels
-          "  vec3 nightC = texture2D(nightMap, vUv).rgb;",
-          "  vec3 color = mix(nightC * 0.9, dayC, dayMix);",
-          "  if(mode > 0.5 && mode < 1.5){ float lum = dot(color, vec3(0.299,0.587,0.114)); color = vec3(lum*0.2, lum*1.1, lum*0.3); }",
-          "  if(mode > 1.5){ float lum = dot(dayC, vec3(0.3,0.59,0.11)); color = vec3(1.0 - lum) * vec3(1.0,0.6,0.2); color += nightC * 0.5; }",
-          "  gl_FragColor = vec4(color, 1.0);",
+          "  gl_FragColor = vec4(shadeEarth(texture2D(dayMap, vUv).rgb, texture2D(nightMap, vUv).rgb, vNormal, sunDir, brightness, mode), 1.0);",
           "}",
         ].join("\n"),
       });
       var earth = new T.Mesh(new T.SphereGeometry(1, 128, 128), earthMat); scene.add(earth);
+      var tileLayer = createTileLayer({ scene: scene, renderer: renderer, camera: camera, uniforms: earthMat.uniforms });
 
       var glowMat = new T.ShaderMaterial({
         transparent: true, side: T.BackSide, uniforms: { mode: { value: 0 } },
@@ -528,6 +715,7 @@
       var coneGeo = new T.ConeGeometry(0.006, 0.018, 3); coneGeo.rotateX(Math.PI / 2);
       var flMat = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
       var selMat = new T.MeshBasicMaterial({ color: 0xffe600 });
+      var flPlaMat = new T.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: 0.95 }); // suspected PLA aircraft (heuristic)
       var meshes = {}; // id -> {mesh, fl}
       var trailGeo = new T.BufferGeometry();
       var trailLine = new T.Line(trailGeo, new T.LineBasicMaterial({ color: 0xffe63b, transparent: true, opacity: 0.9 }));
@@ -573,6 +761,7 @@
         camera.aspect = aspect;
         camera.fov = aspect < 1 ? Math.min(62, (2 * Math.atan(Math.tan(14 * DEG) / aspect)) / DEG) : 28; // keep horizontal FOV on portrait phones
         applyViewOffset();
+        if (renderer.getPixelRatio() !== maxDpr()) renderer.setPixelRatio(maxDpr());
         renderer.setSize(w, hgt, false);
       }
       // Centre the globe in the part of the screen that is NOT covered by the HUD panels.
@@ -607,8 +796,8 @@
         st.list.forEach(function (fl) {
           seen[fl.id] = 1;
           var e = meshes[fl.id];
-          if (!e) { var m = new T.Mesh(coneGeo, flMat); flightGroup.add(m); e = meshes[fl.id] = { mesh: m, fl: fl }; }
-          e.fl = fl;
+          if (!e) { var m = new T.Mesh(coneGeo, fl.pla ? flPlaMat : flMat); flightGroup.add(m); e = meshes[fl.id] = { mesh: m, fl: fl }; }
+          e.fl = fl; if (e.mesh.material !== selMat) e.mesh.material = fl.pla ? flPlaMat : flMat;
         });
         Object.keys(meshes).forEach(function (id) { if (!seen[id]) { flightGroup.remove(meshes[id].mesh); delete meshes[id]; } });
       }
@@ -726,7 +915,7 @@
           tmpTarget.copy(v).add(tmpDir);
           e.mesh.up.copy(tmpUp); e.mesh.lookAt(tmpTarget);
           var isSel = id === selRef.current;
-          e.mesh.material = isSel ? selMat : flMat;
+          e.mesh.material = isSel ? selMat : e.fl.pla ? flPlaMat : flMat;
           var s = isSel ? k * 2.2 : k;
           e.mesh.scale.set(s, s, s);
           if (isSel) { selFl = fl; selPos = { lat: p.lat, lon: p.lon, v: v }; }
@@ -815,6 +1004,11 @@
           var ll = vecToLatLon(camera.position);
           setView(function (o) { return Math.abs(o.lat - ll.lat) < 0.01 && Math.abs(o.lon - ll.lon) < 0.01 && Math.abs(o.altKm - (camLen - 1) * R_KM) < 5 ? o : { lat: ll.lat, lon: ll.lon, altKm: (camLen - 1) * R_KM }; });
         }
+        tileLayer.update(nowMs, m, earthMat.uniforms.sunDir.value, root.clientWidth || window.innerWidth, root.clientHeight || window.innerHeight, lastShift || 0);
+        // adaptive resolution: if the GPU can't hold ~25 fps at the current pixel ratio, step it down (3 -> 2 -> 1.5)
+        var ft = performance.now(); if (frame.ft) { var dt = ft - frame.ft; if (dt < 250) { frame.avg = (frame.avg || 33) * 0.95 + dt * 0.05; frame.n = (frame.n || 0) + 1; } }
+        frame.ft = ft;
+        if (frame.n > 90 && frame.avg > 42 && dprCap > 1.5 && !document.hidden) { dprCap = dprCap > 2 ? 2 : 1.5; frame.n = 0; frame.avg = 33; resize(); }
         renderer.render(scene, camera);
       }
       frame();
@@ -840,12 +1034,12 @@
       }
       canvas.addEventListener("pointerdown", onDown); canvas.addEventListener("pointerup", onUp);
 
-      api.current = { camera: camera, controls: controls, renderer: renderer };
+      api.current = { camera: camera, controls: controls, renderer: renderer, tiles: tileLayer };
       return function () {
         cancelAnimationFrame(raf);
         canvas.removeEventListener("pointerdown", onDown); canvas.removeEventListener("pointerup", onUp);
         if (ro) ro.disconnect(); else window.removeEventListener("resize", resize);
-        controls.dispose(); renderer.dispose();
+        controls.dispose(); tileLayer.dispose(); renderer.dispose();
       };
     }, []);
 
@@ -867,18 +1061,22 @@
     function flightsBody() {
       return [
         flights.status === "demo" && h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — flight feeds unreachable (" + (flights.error || "?") + "). Retrying…"),
+        plaAir.length ? h("div", { key: "plaw", className: "ge-iss ge-plawarn" },
+          h("div", null, h("b", null, "⚠️ PLA · " + plaAir.length + " 疑似"), h("small", null, "SUSPECTED PLA AIRCRAFT ON ADS-B (heuristic)")),
+          h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: cyclePla }, "⚠️ PLA " + plaAir.length)) : null,
         selected ? [
           h("div", { className: "ge-pick", key: "pick" },
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous aircraft", onClick: function () { cycle(-1); } }, "‹"),
             h("div", { className: "ge-pick-mid" },
-              h("b", { className: "ge-cs" }, selected.callsign),
-              h("small", null, (selIdx + 1) + " / " + list.length + (selected.country ? " · " + selected.country : ""))),
+              h("b", { className: "ge-cs", style: selected.pla ? { color: "#ff3b30" } : null }, (selected.pla ? "⚠️ " : "") + selected.callsign),
+              h("small", null, (selIdx + 1) + " / " + list.length + (selected.country ? " · " + selected.country : "") + (selected.type ? " · " + selected.type : "") + (selected.pla ? " · ⚠️ 疑似 PLA" : ""))),
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Next aircraft", onClick: function () { cycle(1); } }, "›")),
           h("dl", { className: "ge-grid", key: "grid" },
             [["ALT", selected.altFt != null ? fmtN(selected.altFt) + " ft" : "--"],
              ["SPD", selected.speedKt != null ? fmtN(selected.speedKt) + " kt" : "--"],
              ["HDG", Math.round(selected.hdg) + "°"],
              ["V/S", selected.vrFpm != null ? fmtN(selected.vrFpm) + " fpm" : "--"]].map(function (kv) { return row(kv[0], kv[1]); })),
+          selected.pla ? h("p", { key: "plan", className: "ge-note ge-warn" }, "⚠️ 疑似 PLA aircraft — heuristic: " + (selected.plaWhy || []).map(function (w) { return { mil: "ADS-B database marks it military", "cn-hex": "Chinese ICAO address block", type: "PLA-type airframe", callsign: "PLA-style callsign" }[w] || w; }).join(" + ") + ". Not an official identification; most PLA aircraft do not broadcast ADS-B — the MND daily count (PLA tab) is the authoritative number.") : null,
           h("button", { key: "follow", type: "button", className: cx("ge-btn", "ge-wide", follow && "is-on"), "aria-pressed": follow, onClick: toggleFollow }, follow ? "● FOLLOWING" : "FOLLOW AIRCRAFT"),
         ] : h("p", { key: "n", className: "ge-note" }, flights.status === "loading" ? "Contacting flight feeds…" : "NO AIRCRAFT IN RANGE"),
         h("p", { key: "s", className: "ge-src" }, "ADS-B via " + (flights.source || "adsb.lol") + " · adsb.lol data © adsb.lol contributors, ODbL 1.0 · fallback adsb.fi (non-commercial) / OpenSky · updated " + ago(flights.updated) + " ago"),
@@ -927,7 +1125,7 @@
       if (pla.latest) {
         var L = pla.latest, max = Math.max.apply(null, pla.days.map(function (d) { return d.aircraft; }).concat([1]));
         var tr = pla.prev7 != null && pla.prev7 > 0 ? Math.round((pla.avg7 - pla.prev7) / pla.prev7 * 100) : null;
-        bits.push(h("div", { key: "pd", className: "ge-pla-date" }, h("b", null, "PLA DAILY"), h("small", null, "MND report · " + L.date)));
+        bits.push(h("div", { key: "pd", className: "ge-pla-date" }, h("b", null, "PLA DAILY · AUTHORITATIVE"), h("small", null, "MND report · " + L.date)));
         bits.push(h("dl", { key: "pn", className: "ge-grid ge-pla-nums" },
           [["AIRCRAFT", fmtN(L.aircraft)], ["LINE CROSS", fmtN(L.cross)], ["SHIPS", fmtN(L.ships)]].map(function (kv) { return row(kv[0], kv[1]); })));
         bits.push(h("div", { key: "sp", className: "ge-spark", role: "img", "aria-label": "Aircraft per day, last 7 days: " + pla.days.map(function (d) { return d.aircraft; }).join(", ") },
@@ -938,6 +1136,10 @@
           tr != null ? h("b", { className: tr > 0 ? "ge-amber" : "ge-lime" }, (tr > 0 ? "▲ +" : tr < 0 ? "▼ " : "► ") + tr + "% vs PRIOR 7 DAYS") : null));
         if (L.event) bits.push(h("p", { key: "ev", className: "ge-note" }, L.event.slice(0, 120)));
       }
+      bits.push(h("p", { key: "au", className: "ge-note ge-plaauth" }, "The 國防部 (MND) daily count above is the authoritative number. Most PLA aircraft and ships do NOT broadcast ADS-B / AIS, so the live map only ever shows a small, partial subset — the red ⚠️ PLA markers are 疑似 (suspected) guesses, never a count."));
+      bits.push(h("div", { key: "pw", className: "ge-iss ge-plawarn" },
+        h("div", null, h("b", null, "⚠️ " + plaAir.length + " 疑似 PLA ON ADS-B NOW"), h("small", null, "heuristic: military flag + Chinese ICAO block / type / callsign")),
+        plaAir.length ? h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: function () { cyclePla(); } }, "SHOW") : null));
       bits.push(h("p", { key: "ps", className: "ge-src" }, "Third-party compilation (pla-tracker.skyfaring.net) of Taiwan MND 國防部 daily reports — unofficial, may lag or contain errors; not a warning. Counts are PLA aircraft / ships reported around Taiwan."));
       bits.push(h("div", { key: "cg", className: "ge-pla-date ge-pla-sep" }, h("b", null, "CCG 海警 · CGA RELEASES"), h("small", null, cga.scanned ? "latest " + cga.scanned + " items" : "")));
       if (cga.status === "loading") bits.push(h("p", { key: "cl", className: "ge-note" }, "Loading 海巡署 RSS…"));
@@ -1148,6 +1350,7 @@
           h("a", { href: "https://www.cga.gov.tw", target: "_blank", rel: "noopener noreferrer" }, "海巡署 CGA"), " · ",
           h("a", { href: "https://celestrak.org", target: "_blank", rel: "noopener noreferrer" }, "CelesTrak"), " · ",
           h("a", { href: "https://earthquake.usgs.gov", target: "_blank", rel: "noopener noreferrer" }, "USGS"), " · ",
+          h("a", { href: "https://earthdata.nasa.gov/gibs", target: "_blank", rel: "noopener noreferrer" }, "NASA GIBS imagery"), " · ",
           h("a", { href: "https://github.com/shashwatak/satellite-js", target: "_blank", rel: "noopener noreferrer" }, "satellite.js"),
           demoAny && h("b", { className: "ge-amber" }, " · DEMO DATA ACTIVE"))),
       toast && h("div", { className: "ge-toast", role: "status" }, toast));

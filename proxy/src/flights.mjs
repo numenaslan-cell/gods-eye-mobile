@@ -22,6 +22,30 @@ export function hexCountry(hex) {
   return "";
 }
 
+/** "Suspected PLA aircraft" heuristic on one adsb.lol / adsb.fi object. Honest limits: most PLA aircraft never transmit ADS-B, and a
+ *  transmitting one can carry any hex/callsign, so this is a LABEL FOR HUMANS ("疑似"), never an identification.
+ *  - military flag: dbFlags bit 0 (adsb.lol/adsb.fi aircraft database says "military")
+ *  - Chinese ICAO block 0x780000-0x7BFFFF (Hong Kong 0x789xxx and Taiwan 0x899xxx are carved out by hexCountry)
+ *  - type designator typical of PLAAF/PLAN airframes (J-10/11/15/16/20/35, H-6, Y-8/9/20, KJ-xxx, JH-7, Z-8/9/10/18/20, WZ-, GJ-; Su-30/35 only together with a Chinese hex)
+ *  - callsign pattern typical of PLA traffic (PLA…/CHN<digit>…); note CCA/CES/CSN… are civil airlines and never match.
+ *  Flag when: (military ∧ China hex) ∨ (military ∧ PLA type) ∨ (China hex ∧ PLA type) ∨ (military-or-China-hex ∧ PLA callsign). Never from the hex alone. */
+const PLA_TYPE = /^(J-?(10|11|15|16|20|35)[A-Z]?|JH-?7[A-Z]?|H-?6[A-Z]?|Y-?(8|9|20)[A-Z]?|KJ-?\d{3,4}[A-Z]?|Z-?(8|9|10|18|19|20)[A-Z]?|WZ-?\d+|GJ-?\d+)$/i;
+const PLA_CALL = /^(PLA[A-Z]*\d*|PLAAF\d*|PLAN\d*|CHN\d+[A-Z]*)$/i;
+export function plaSuspect(a) {
+  if (!a || typeof a.hex !== "string") return null;
+  const hex = a.hex.replace(/^~/, "").toLowerCase();
+  const mil = (Number(a.dbFlags) & 1) === 1, cn = hexCountry(hex) === "China";
+  const t = typeof a.t === "string" ? a.t.trim() : "", cs = typeof a.flight === "string" ? a.flight.trim() : "";
+  const typ = PLA_TYPE.test(t) || (cn && /^SU3[05]$/i.test(t)), call = PLA_CALL.test(cs);
+  const why = [];
+  if (mil) why.push("mil");
+  if (cn) why.push("cn-hex");
+  if (typ) why.push("type");
+  if (call) why.push("callsign");
+  const hit = (mil && cn) || (mil && typ) || (cn && typ) || ((mil || cn) && call);
+  return hit ? why : null;
+}
+
 const numOrNull = (v) => (typeof v === "number" && isFinite(v) ? v : null);
 
 /** One adsb.lol / adsb.fi aircraft object -> client flight (or null: no position / on the ground). */
@@ -35,11 +59,13 @@ export function normalizeAdsb(a) {
   const gs = numOrNull(a.gs), vr = numOrNull(a.baro_rate) != null ? a.baro_rate : numOrNull(a.geom_rate);
   const trk = numOrNull(a.track) != null ? a.track : numOrNull(a.true_heading) != null ? a.true_heading : numOrNull(a.mag_heading);
   const cs = typeof a.flight === "string" ? a.flight.trim() : "";
+  const pla = plaSuspect(a);
   return {
     id: hex, callsign: cs || (a.r ? String(a.r).trim() : "") || hex.toUpperCase(), country: hexCountry(hex),
     lat, lon, altFt: alt != null ? Math.round(alt) : null, speedKt: gs != null ? Math.round(gs) : null, vMs: gs != null ? gs * KT_MS : 0,
     hdg: trk != null ? trk : 0, vrFpm: vr != null ? Math.round(vr * FT_FPM) : null,
     reg: a.r ? String(a.r).trim() : undefined, type: a.t ? String(a.t).trim() : undefined,
+    ...(pla ? { pla: true, plaWhy: pla } : {}),
   };
 }
 

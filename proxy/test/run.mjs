@@ -6,7 +6,7 @@ import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
 import { parseCgaRss } from "../src/cga.mjs";
-import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex } from "../src/flights.mjs";
+import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex, plaSuspect } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
 
 await ok("RFC 8291 appendix-A test vector (aes128gcm payload encryption)", async () => {
@@ -199,3 +199,23 @@ await ok("CGA RSS: real feed sample (2026-11-01, trimmed) parses", () => {
   assert.equal(r.scanned, 5); assert.equal(r.items.length, 2); assert.ok(r.items.every((x) => x.kind === "mention" && x.snippet.includes("海警") && x.link.startsWith("https://www.cga.gov.tw/")));
 });
 console.log(n + " tests passed");
+
+// ---- suspected PLA aircraft heuristic ----
+{
+  const A = (o) => ({ hex: "780abc", lat: 25, lon: 122, alt_baro: 20000, ...o });
+  assert.deepEqual(plaSuspect(A({ dbFlags: 1 })), ["mil", "cn-hex"], "military flag + China hex");
+  assert.equal(plaSuspect(A({})), null, "China hex alone (Air China etc.) never flags");
+  assert.equal(plaSuspect(A({ flight: "CCA123  ", t: "B738" })), null, "civil airline callsign + hex");
+  assert.equal(plaSuspect(A({ dbFlags: 1, hex: "ae1234" })), null, "foreign military is not PLA");
+  assert.deepEqual(plaSuspect(A({ dbFlags: 1, hex: "ae1234", t: "J11" })), ["mil", "type"], "mil + PLA airframe type");
+  assert.equal(plaSuspect(A({ dbFlags: 1, hex: "ae1234", t: "CH47" })), null, "Chinook is not a PLA type");
+  assert.equal(plaSuspect(A({ dbFlags: 1, hex: "899123" })), null, "Taiwan block is carved out");
+  assert.equal(plaSuspect(A({ dbFlags: 1, hex: "789123" })), null, "Hong Kong block is carved out");
+  assert.ok(plaSuspect(A({ hex: "7a0001", flight: "PLA123", t: "Y20" })), "cn hex + type + callsign");
+  assert.equal(plaSuspect(A({ hex: "ae1234", t: "SU30" })), null, "Su-30 alone / non-China hex");
+  assert.ok(plaSuspect(A({ t: "SU30" })), "Su-30 with China hex");
+  const n = normalizeAdsb({ hex: "780abc", flight: "PLA9 ", lat: 24, lon: 123, alt_baro: 30000, gs: 400, track: 10, dbFlags: 1, t: "H6" });
+  assert.equal(n.pla, true); assert.ok(n.plaWhy.includes("mil"));
+  assert.equal("pla" in normalizeAdsb({ hex: "899123", lat: 24, lon: 121, alt_baro: 30000 }), false, "no pla key on normal traffic");
+  console.log("ok pla heuristic");
+}

@@ -87,6 +87,7 @@
   function demoFlights() {
     var now = Date.now(), b = cfg.bbox, list = [];
     list.push({ id: "demo-jal103", callsign: "JAL103", country: "Japan", lat: 25.08, lon: 121.23, altFt: 38400, speedKt: 492, vMs: 253, hdg: 272, vrFpm: 0, t: now });
+    list.push({ id: "demo-pla1", callsign: "PLA1234", country: "China", lat: 24.9, lon: 120.1, altFt: 21000, speedKt: 410, vMs: 211, hdg: 95, vrFpm: 0, t: now, type: "H6", pla: true, plaWhy: ["mil", "cn-hex", "type"] }); // demo only: exercises the suspected-PLA UI
     var carriers = ["CAL", "EVA", "CPA", "JAL", "ANA", "CSN", "UAL", "SIA", "TTW", "MDA"];
     for (var i = 0; i < 45; i++) {
       var v = rnd(130, 260);
