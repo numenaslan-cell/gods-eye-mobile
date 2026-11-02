@@ -1,12 +1,14 @@
 // node proxy/test/run.mjs  — unit tests for the Worker's pure logic (no network, no Cloudflare runtime needed; Node >= 20).
 import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
-import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan } from "../src/ais.mjs";
+import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan, isGov, ccgWhy } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
 import { parseCgaRss } from "../src/cga.mjs";
-import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex, plaSuspect } from "../src/flights.mjs";
+import { parseMndList, parseMndDetail, parseJsIndex, parseJsTitle, parseJsPdfText, ccgHull, decodeCcgHull, sanitizeJsDetail, sanitizeMndDay, pruneJsEvents, needPdf, plaPublic } from "../src/intel.mjs";
+import { PLAN_HULLS } from "../src/plahulls.mjs";
+import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex, plaSuspect, inPlaBlock } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
 
 await ok("RFC 8291 appendix-A test vector (aes128gcm payload encryption)", async () => {
@@ -57,7 +59,7 @@ await ok("AIS merge: position + static data + n/a sentinels", () => {
 });
 
 await ok("CCG heuristic", () => {
-  assert.ok(isCcg({ name: "HAI JING 2102", mmsi: "412000000" })); assert.ok(isCcg({ name: "CHINA COAST GUARD 3305", mmsi: "1" })); assert.ok(isCcg({ name: "x", type: 55, mmsi: "413999999" }));
+  assert.ok(isCcg({ name: "HAI JING 2102", mmsi: "412000000" })); assert.ok(isCcg({ name: "CHINA COAST GUARD 3305", mmsi: "1" })); assert.ok(!isCcg({ name: "x", type: 55, mmsi: "413999999" }) && isGov({ name: "x", type: 55, mmsi: "413999999" })); // type 55 alone is only a generic gov't vessel now
   assert.ok(!isCcg({ name: "EVER GIVEN", mmsi: "353000000", type: 70 })); assert.ok(!isCcg({ name: "TAIWAN CGA 118", type: 55, mmsi: "416000009" }));
 });
 
@@ -116,7 +118,7 @@ await ok("CCG heuristic: fishing (type 30) never matches on MMSI prefix alone; n
   assert.ok(isCcg({ name: "HAIJING 2901", mmsi: "412000001", type: 30 }));           // name wins even if flagged fishing
   assert.ok(isCcg({ name: "ZHONGGUOHAIJIAN8039", mmsi: "412440999", type: 30 }));
   assert.ok(isCcg({ name: "中國海警 2901", mmsi: "1" })); assert.ok(isCcg({ name: "CHINA COAST GUARD", mmsi: "1", type: 30 }));
-  assert.ok(isCcg({ name: "", mmsi: "412440933", type: 55 })); assert.ok(!isCcg({ name: "HAIXUN08186", mmsi: "413399510", type: 55 })); assert.ok(isCcg({ name: "CHINACOASTGUARD2302", mmsi: "413875034", type: 55 })); assert.ok(!isCcg({ name: "", mmsi: "416000009", type: 55 })); assert.ok(!isCcg({ name: "JIN HAI SHUN 5", mmsi: "413696780", type: 80 }));
+  assert.ok(!isCcg({ name: "", mmsi: "412440933", type: 55 }) && isGov({ name: "", mmsi: "412440933", type: 55 })); assert.ok(!isCcg({ name: "HAIXUN08186", mmsi: "413399510", type: 55 }) && isGov({ name: "HAIXUN08186", mmsi: "413399510", type: 55 })); assert.ok(isCcg({ name: "CHINACOASTGUARD2302", mmsi: "413875034", type: 55 })); assert.ok(!isCcg({ name: "", mmsi: "416000009", type: 55 })); assert.ok(!isCcg({ name: "JIN HAI SHUN 5", mmsi: "413696780", type: 80 }));
 });
 
 const mpbF = (o) => ({ type: "Feature", geometry: { type: "Point", coordinates: [o.Longitude, o.Latitude] }, properties: { IMO_Number: "", ShipName: "X  ", MMSI: "412446258", Navigational_Status: "0", SOG: 9.5, COG: 320.3, Ship_and_Cargo_Type: 70, Record_Time: "2026/11/01 17:39:04", ...o } });
@@ -182,7 +184,8 @@ await ok("CWA gate: no CWA_API_KEY -> enabled:false (USGS fallback), never calls
   const env = { CWA_API_KEY: "SECRET-KEY-123" };
   const q = await cwaData(env, "quakes", f); assert.equal(q.enabled, true); assert.equal(q.quakes.length, 2); assert.equal(q.partial, true);
   assert.ok(urls.every((u) => u.startsWith("https://opendata.cwa.gov.tw/api/v1/rest/datastore/") && u.includes("Authorization=SECRET-KEY-123")));
-  assert.equal((await cwaData(env, "typhoon", f)).typhoons.length, 1); assert.equal((await cwaData(env, "warnings", f)).warnings[0].phenomena, "陸上強風");
+  const realNow = Date.now; Date.now = () => Date.parse("2026-11-01T15:00:00+08:00"); // the real warning sample expires; pin "now" to the day it was captured so the test is not time-bomb
+  try { assert.equal((await cwaData(env, "typhoon", f)).typhoons.length, 1); assert.equal((await cwaData(env, "warnings", f)).warnings[0].phenomena, "陸上強風"); } finally { Date.now = realNow; }
   await assert.rejects(cwaData(env, "quakes", async (u) => { throw new Error("boom " + u); }), (e) => !String(e.message).includes("SECRET-KEY-123"));
 });
 
@@ -234,3 +237,77 @@ console.log(n + " tests passed");
   const pub = publicShips(m, 2000, 60000); assert.equal(pub.find((x) => x.mmsi === "412000111").plan, true); assert.equal(pub.find((x) => x.mmsi === "412000112").plan, false); assert.equal(pub.find((x) => x.mmsi === "412000112").ccg, true);
   console.log("ok plan heuristic");
 }
+
+// ---- Phase 1: CCG rules, hull -> bureau, remembered MMSIs, aircraft prior ----
+await ok("CCG: 413875 block rule, remembered MMSI (known), type55-only -> generic gov't vessel, fishing/HAIXUN excluded", () => {
+  assert.equal(ccgWhy({ name: "", mmsi: "413875321", type: 55 }), "block"); assert.equal(ccgWhy({ name: "", mmsi: "413875321" }), "block", "block applies without a type too");
+  assert.equal(ccgWhy({ name: "", mmsi: "413875321", type: 30 }), null, "fishing never by MMSI");
+  assert.equal(ccgWhy({ name: "HAIXUN 01", mmsi: "413875321", type: 55 }), null, "HAIXUN (MSA patrol) is not CCG even inside the block");
+  assert.equal(ccgWhy({ name: "CHINACOASTGUARD14530", mmsi: "413999000", type: 55 }), "name");
+  assert.equal(ccgWhy({ name: "", mmsi: "412111111", type: 55, known: true }), "known"); assert.equal(ccgWhy({ name: "", mmsi: "412111111", type: 30, known: true }), null);
+  const xm = { name: "XIA MEN HAI YANG 01", mmsi: "412000999", type: 55 };
+  assert.ok(!isCcg(xm) && isGov(xm) && !isPlan(xm), "XIA MEN HAI YANG 01 (type 55, no CCG name): only a gov't vessel");
+  assert.ok(!isGov({ name: "x", mmsi: "412000999", type: 30 })); assert.ok(!isGov({ name: "x", mmsi: "366000000", type: 55 })); assert.ok(!isGov({ name: "HAI JING 2102", mmsi: "412000999", type: 55 }), "CCG is not also gov");
+  const pub = publicShips({ a: { mmsi: "412000999", name: "XIA MEN HAI YANG 01", type: 55, lat: 24, lon: 120, t: 1000 }, b: { mmsi: "413875001", name: "CHINACOASTGUARD14530", type: 55, lat: 24, lon: 120, t: 1000 }, c: { mmsi: "413875002", name: "", type: 55, lat: 24, lon: 121, t: 1000 } }, 2000, 60000);
+  const A = pub.find((x) => x.mmsi === "412000999"), B = pub.find((x) => x.mmsi === "413875001"), C = pub.find((x) => x.mmsi === "413875002");
+  assert.ok(A.gov && !A.ccg && !A.ccgBy); assert.ok(B.ccg && B.ccgBy === "name" && B.hull === "14530" && B.bureau === "Fujian"); assert.ok(C.ccg && C.ccgBy === "block" && !C.hull);
+});
+await ok("CCG hull number -> home bureau (5 digits: provincial bureau; 4 digits: directly-subordinate bureau)", () => {
+  assert.equal(ccgHull("CHINACOASTGUARD14530"), "14530"); assert.equal(ccgHull("CHINA COAST GUARD 2901"), "2901"); assert.equal(ccgHull("HAI JING 2102"), "2102"); assert.equal(ccgHull("CCG 3305"), "3305"); assert.equal(ccgHull("海警2901"), "2901"); assert.equal(ccgHull("MINLONGYU61687"), null);
+  assert.equal(decodeCcgHull("14530").short, "Fujian"); assert.equal(decodeCcgHull("21001").short, "Guangdong"); assert.equal(decodeCcgHull("34305").short, "Shandong"); assert.equal(decodeCcgHull("2901").kind, "direct"); assert.match(decodeCcgHull("2901").en, /Ningbo/); assert.match(decodeCcgHull("3305").en, /Guangzhou/); assert.match(decodeCcgHull("5901").en, /Sanya/);
+  assert.equal(decodeCcgHull("99999"), null); assert.equal(decodeCcgHull("12"), null); assert.equal(decodeCcgHull("7901"), null);
+});
+await ok("aircraft: 0x7A1000-0x7A4FFF PLA-prior block, TU16 and Chinese-hex-only ICAO types", () => {
+  assert.ok(inPlaBlock("7a1000") && inPlaBlock("7A4FFF") && inPlaBlock("~7a2345")); assert.ok(!inPlaBlock("7a0fff") && !inPlaBlock("7a5000") && !inPlaBlock("899123") && !inPlaBlock(""));
+  assert.deepEqual(plaSuspect({ hex: "7a10c3" }), ["cn-hex", "pla-block"], "block alone flags (labelled heuristic in the UI)");
+  assert.deepEqual(plaSuspect({ hex: "7a1234", dbFlags: 1, t: "TU16" }), ["mil", "cn-hex", "type", "pla-block"]);
+  assert.deepEqual(plaSuspect({ hex: "780abc", t: "TU16" }), ["cn-hex", "type"], "TU16 = H-6 bomber");
+  assert.deepEqual(plaSuspect({ hex: "780abc", t: "AN12" }), ["cn-hex", "type"]); assert.deepEqual(plaSuspect({ hex: "780abc", t: "IL76" }), ["cn-hex", "type"]);
+  assert.equal(plaSuspect({ hex: "ae1234", dbFlags: 1, t: "IL76" }), null, "foreign Il-76/An-12 is not PLA"); assert.equal(plaSuspect({ hex: "ae1234", t: "AN12" }), null);
+  assert.equal(plaSuspect({ hex: "780abc", t: "B738" }), null); assert.equal(plaSuspect({ hex: "7a5000" }), null, "outside the block, a Chinese hex alone never flags");
+});
+
+// ---- Phase 2: Taiwan MND daily bulletin ----
+await ok("MND list + detail pages (real 2026-10/11 samples)", () => {
+  const fx = (f) => readFileSync(new URL("./fixtures/" + f, import.meta.url), "utf8");
+  const l = parseMndList(fx("mnd-list.html")); assert.ok(l.length >= 3); assert.deepEqual(l[0], { id: "88108", date: "2026-11-02", title: "中共解放軍臺海周邊海、空域動態" }); assert.ok(l[0].date > l[1].date);
+  const d = parseMndDetail(fx("mnd-detail-88108.html"), "88108");
+  assert.equal(d.date, "2026-11-02"); assert.equal(d.aircraft, 19); assert.equal(d.adiz, 4); assert.equal(d.crossed, false); assert.equal(d.plan, 7); assert.equal(d.official, 6);
+  assert.equal(d.from, "2026-11-01T06:00:00+08:00"); assert.equal(d.to, "2026-11-02T06:00:00+08:00"); assert.match(d.map, /^https:\/\/www\.mnd\.gov\.tw\/NewUpload\/202611\/1151102_.+\.jpg$/); assert.ok(!/ /.test(d.map)); assert.equal(d.url, "https://www.mnd.gov.tw/news/plaact/88108");
+  const z = parseMndDetail(fx("mnd-detail-88056.html"), "88056"); assert.equal(z.aircraft, 0); assert.equal(z.plan, 1); assert.equal(z.official, 5); assert.equal(z.map, null); assert.equal(z.adiz, null);
+  const c = parseMndDetail(fx("mnd-detail-88068.html"), "88068"); assert.equal(c.aircraft, 3); assert.equal(c.adiz, 1); assert.equal(c.crossed, true); assert.equal(c.official, 9);
+  assert.equal(parseMndDetail(fx("mnd-detail-88001.html"), "88001").aircraft, 8); assert.equal(parseMndDetail("<html>Access denied.</html>", "1"), null);
+  assert.ok(sanitizeMndDay(d) && sanitizeMndDay({ ...d, map: "https://evil.example/x.jpg" }).map === null && sanitizeMndDay({ id: "x" }) === null);
+});
+
+// ---- Phase 2: Japan Joint Staff (PDL 1.0) ----
+await ok("Joint Staff index titles -> class / strait / direction / aircraft type (real 2026-11 index head)", () => {
+  const fx = (f) => readFileSync(new URL("./fixtures/" + f, import.meta.url), "utf8");
+  const ev = parseJsIndex(fx("js-index-head.html")); assert.ok(ev.length >= 20); assert.ok(ev.every((e) => /^p\d{8}_\d{2}$/.test(e.id) && e.pdf.startsWith("https://www.mod.go.jp/js/pdf/")));
+  assert.ok(ev[0].id > ev[1].id, "newest first");
+  const a = ev.find((e) => e.id === "p20261102_04"); assert.equal(a.kind, "ship"); assert.deepEqual(a.classes, ["ルーヤンIII", "フユ", "フチ"]); assert.equal(a.groups.length, 2); assert.equal(a.groups[0].dirs[0], "NW"); assert.equal(a.groups[1].dirs[0], "SE"); assert.equal(a.groups[0].whereEn[0], "Miyako Strait (Okinawa–Miyako)"); assert.match(a.classEn[0], /Type 052D/);
+  const b = ev.find((e) => e.id === "p20261102_03"); assert.deepEqual(b.groups[0].whereEn, ["Amami–Yokoate gap"]); assert.equal(b.groups[0].dirs[0], "SW"); assert.match(b.classEn[0], /Type 054A/);
+  const c = ev.find((e) => e.id === "p20261102_05"); assert.equal(c.kind, "air"); assert.deepEqual(c.types, ["WZ-7"]); assert.equal(c.groups[0].whereEn[0], "Miyako Strait (Okinawa–Miyako)");
+  const d = ev.find((e) => e.id === "p20261029_01"); assert.deepEqual(d.types, ["TB-001", "Y-9"]);
+  const e = ev.find((x) => x.id === "p20261030_03"); assert.equal(e.groups[0].whereEn[0], "Osumi Strait"); assert.equal(e.groups[0].dirs[0], "W");
+  assert.equal(parseJsIndex(fx("js-index-head.html")).find((x) => x.id === "p20261015_02").classEn[0], "Aircraft carrier Liaoning + 3 other ships");
+  assert.equal(parseJsTitle("ロシア海軍艦艇の動向について（ステレグシチー級／対馬海峡）"), null, "Russia-only releases are not China-related");
+  assert.equal(parseJsTitle("中国海軍艦艇の動向について（ルーヤンⅢ／宮古島－与那国島間）").classes[0], "ルーヤンIII");
+});
+await ok("Joint Staff PDF text (pdftotext) -> hull numbers + names, observation time/place, UAV/scramble flags", () => {
+  const fx = (f) => readFileSync(new URL("./fixtures/" + f, import.meta.url), "utf8");
+  const a = parseJsPdfText(fx("js-p20261102_04.txt")); assert.deepEqual(a.ships.map((s) => s.hull + ":" + s.ship), ["121:Qiqihar", "901:Hulunhu", "890:Chaohu"]); assert.equal(a.seen, "2026-11-01T12:00:00+09:00"); assert.match(a.place, /宮古島/); assert.equal(a.ships[0].cls, "ルーヤンIII"); assert.match(a.ships[1].clsEn, /Fuyu/);
+  const b = parseJsPdfText(fx("js-p20261102_03.txt")); assert.equal(b.ships[0].hull, "532"); assert.equal(b.ships[0].ship, "Jingzhou");
+  const c = parseJsPdfText(fx("js-p20261102_05.txt")); assert.deepEqual(c.aircraft, ["WZ-7"]); assert.ok(c.uav && c.scramble && c.ships.length === 0);
+  const d = parseJsPdfText(fx("js-p20261014_01.txt")); assert.deepEqual(d.ships.map((s) => s.hull), ["16", "103", "104", "123"]); assert.equal(d.ships[0].ship, "Liaoning"); assert.equal(d.ships[0].name, "遼寧");
+  assert.deepEqual(parseJsPdfText("nothing useful").ships, []);
+  assert.equal(PLAN_HULLS["052D"]["121"], "Qiqihar"); assert.equal(PLAN_HULLS["055"]["102"], "Lhasa");
+  const s = sanitizeJsDetail({ ships: [{ hull: "121", cls: "x".repeat(99), evil: 1 }, { hull: "abc" }], aircraft: ["Y-9"], uav: 1, place: "p" }); assert.equal(s.ships.length, 1); assert.equal(s.ships[0].cls.length, 24); assert.ok(!("evil" in s.ships[0])); assert.equal(s.uav, true);
+});
+await ok("PLA state helpers: prune window, needPdf, public payload carries attribution + licence", () => {
+  const evs = [{ id: "p20261102_04", date: "2026-11-02" }, { id: "p20260801_01", date: "2026-08-01" }, { id: "bad", date: "2026-11-02" }];
+  const kept = pruneJsEvents(evs, Date.parse("2026-11-03T00:00:00Z")); assert.deepEqual(kept.map((e) => e.id), ["p20261102_04"]);
+  assert.deepEqual(needPdf(kept, {}), ["p20261102_04"]); assert.deepEqual(needPdf(kept, { p20261102_04: {} }), []);
+  const P = { mnd: { list: [{ id: "1", date: "2026-11-02" }, { id: "2", date: "2026-11-01" }], days: { 1: { id: "1", date: "2026-11-02", aircraft: 19 } }, okAt: 5 }, js: { events: kept, details: {}, okAt: 6 } };
+  const out = plaPublic(P, 10); assert.equal(out.mnd.days.length, 1); assert.equal(out.js.licence, "PDL 1.0"); assert.match(out.js.attribution, /統合幕僚監部/); assert.match(out.mnd.attribution, /國防部/); assert.deepEqual(out.needPdf, ["p20261102_04"]); assert.equal(out.updated.js, 6);
+});

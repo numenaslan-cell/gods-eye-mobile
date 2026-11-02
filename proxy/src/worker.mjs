@@ -7,6 +7,8 @@
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
  *   GET  /api/quakes | /api/typhoon | /api/warnings   CWA open data (secret CWA_API_KEY); {enabled:false} -> client falls back to USGS
  *   GET  /api/cga          CGA (海巡署) RSS items mentioning 海警, parsed in the Hub DO, cached 30 min
+ *   GET  /api/pla          PLA-activity intel: Taiwan MND daily bulletins + Japan Joint Staff releases (scraped by the placed `pla-intel` Worker via service binding INTEL; PDF details posted by GitHub Actions)
+ *   POST /api/pla/ingest | /api/pla/refresh | GET /api/pla/pdf/:id   Bearer INGEST_TOKEN (GitHub Actions)
  *   POST /api/push/subscribe | /unsubscribe | /test   Web Push subscriptions (stored in KV)
  *   cron (every 2 min)     M4.5+ quakes near Taiwan, China Coast Guard vessel in AIS, upcoming ISS pass -> Web Push
  *
@@ -17,7 +19,8 @@
 import createPasses from "../../assets/passes.js";
 import satellite from "../../assets/vendor/satellite.min.js";
 import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
-import { applyAis, applyMpb, trimShips, publicShips, isCcg, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
+import { applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
+import { plaPublic, pruneJsEvents, sanitizeJsDetail, sanitizeMndDay } from "./intel.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
 import { cwaData } from "./cwa.mjs";
@@ -115,6 +118,24 @@ export default {
       const r = await hub.fetch("https://hub/cga");
       return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=300" }) });
     }
+    if (request.method === "GET" && p === "/api/pla") {
+      if (!hub) return json(cors, { error: "not configured" }, 503);
+      const r = await hub.fetch("https://hub/pla");
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=120" }) });
+    }
+    if ((request.method === "POST" && (p === "/api/pla/ingest" || p === "/api/pla/refresh")) || (request.method === "GET" && /^\/api\/pla\/pdf\/p\d{8}_\d{2}$/.test(p))) {
+      // GitHub Actions: refresh now / post pdftotext-derived details / fetch a Joint Staff PDF through the Taiwan-placed Worker when the runner cannot reach mod.go.jp directly
+      if (!hub || !env.INGEST_TOKEN) return json(cors, { error: "ingest not configured" }, 503);
+      const given = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+      if (!(await tokenOk(given, env.INGEST_TOKEN))) return json(cors, { error: "unauthorized" }, 401);
+      if (p.startsWith("/api/pla/pdf/")) {
+        if (!env.INTEL) return json(cors, { error: "INTEL binding missing" }, 503);
+        const r = await env.INTEL.fetch("https://intel/js/pdf/" + p.slice("/api/pla/pdf/".length));
+        return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": r.headers.get("Content-Type") || "application/octet-stream", "Cache-Control": "no-store" }) });
+      }
+      const r = await hub.fetch("https://hub/" + (p === "/api/pla/ingest" ? "pla-ingest" : "pla-refresh"), { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
+      return json(cors, await r.json(), r.status);
+    }
     if (request.method === "GET" && p === "/api/push/config") {
       return json(cors, { enabled: !!(env.SUBS && hub && env.VAPID_PRIVATE_KEY && env.VAPID_PUBLIC_KEY), publicKey: env.VAPID_PUBLIC_KEY || null, aisEnabled: !!(env.AISSTREAM_API_KEY || env.INGEST_TOKEN), cwaEnabled: !!env.CWA_API_KEY }, 200, { "Cache-Control": "public, max-age=300" });
     }
@@ -141,9 +162,10 @@ export class Hub {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
     ctx.blockConcurrencyWhile(async () => {
-      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt"]); this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
+      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt", "pla"]); this.pla = s.get("pla") || { mnd: { list: [], days: {} }, js: { events: [], details: {} } }; this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
       this.ships = s.get("ships") || {}; this.lastCollect = s.get("lastCollect") || 0; this.lastError = s.get("lastError") || "";
       this.everCollected = this.lastCollect > 0;
+      await this.loadKnown(); this.markKnown();
     });
   }
 
@@ -154,9 +176,13 @@ export class Hub {
       if (path === "/ingest") return this.ingest(request);
       if (path === "/cga") return this.cga();
       if (path === "/cwa-ingest") return this.cwaIngest(request);
+      if (path === "/pla") return new Response(JSON.stringify(plaPublic(this.pla, Date.now())), { headers: { "Content-Type": "application/json" } });
+      if (path === "/pla-ingest") return this.plaIngest(request);
+      if (path === "/pla-refresh") { const rep = await this.plaRefresh(true); return new Response(JSON.stringify({ ok: true, report: rep, ...plaPublic(this.pla, Date.now()) }), { headers: { "Content-Type": "application/json" } }); }
       if (path.startsWith("/cwa/")) return this.cwa(path.slice(5));
       if (path === "/cron") {
-        const report = await this.runAlerts();
+        const pla = await this.plaRefresh(false).catch((e) => "err:" + String((e && e.message) || e).slice(0, 80));
+        const report = await this.runAlerts(); if (pla) report.pla = pla;
         this.cron = { at: Date.now(), report }; await this.ctx.storage.put("cron", this.cron); // heartbeat, visible in /api/ships -> cron
         return new Response(JSON.stringify(report), { headers: { "Content-Type": "application/json" } });
       }
@@ -230,11 +256,92 @@ export class Hub {
     for (const x of mpb) if (applyMpb(this.ships, x, now)) m++;
     for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
     const dropped = trimShips(this.ships);
+    await this.rememberCcg(now);
     this.lastCollect = now; this.lastError = ""; this.everCollected = true;
     this.diag = { source: "ingest", msgs: msgs.length, applied: n, mpb: mpb.length, mpbApplied: m, dropped, at: now };
     if (mpb.length) { this.mpbAt = now; await this.ctx.storage.put("mpbAt", now); }
     await this.ctx.storage.put({ ships: this.ships, lastCollect: this.lastCollect, lastError: "", diag: this.diag });
     return new Response(JSON.stringify({ ok: true, received: msgs.length, applied: n, mpb: m, tracked: Object.keys(this.ships).length }), { headers: { "Content-Type": "application/json" } });
+  }
+
+  /* ---- remembered CCG MMSIs (KV `ccg:known`): a hull seen once with a CCG name stays "suspected CCG" even when it later broadcasts another/blank name ---- */
+  async loadKnown() {
+    this.known = {}; this.knownDirty = false; this.knownWrote = 0;
+    if (!this.env.SUBS) return;
+    try { this.known = (await this.env.SUBS.get("ccg:known", "json")) || {}; } catch { this.known = {}; }
+  }
+  markKnown() { for (const s of Object.values(this.ships)) { if (this.known[s.mmsi]) s.known = true; else delete s.known; } }
+  async rememberCcg(now) {
+    if (!this.env.SUBS) return;
+    for (const s of Object.values(this.ships)) {
+      if (ccgWhy({ ...s, known: false }) !== "name") { if (this.known[s.mmsi]) s.known = true; continue; }
+      const k = this.known[s.mmsi];
+      if (!k || now - k.t > 3 * 86400000 || (s.name && k.n !== s.name.slice(0, 30))) { this.known[s.mmsi] = { n: (s.name || "").slice(0, 30), t: now }; this.knownDirty = true; }
+      s.known = true;
+    }
+    if (this.knownDirty && now - this.knownWrote > 5 * 60000) { // KV writes are scarce on the free plan: at most one per 5 min, only when something new / stale-by-3-days was seen
+      const keys = Object.keys(this.known);
+      for (const m of keys) if (now - this.known[m].t > 180 * 86400000) delete this.known[m];
+      const left = Object.keys(this.known); if (left.length > 400) for (const m of left.sort((a, b) => this.known[a].t - this.known[b].t).slice(0, left.length - 400)) delete this.known[m];
+      try { await this.env.SUBS.put("ccg:known", JSON.stringify(this.known)); this.knownDirty = false; this.knownWrote = now; } catch { /* retry on the next ingest */ }
+    }
+  }
+
+  /* ---- PLA-activity intel: MND daily + Japan Joint Staff (scraped by the Taiwan-placed `pla-intel` Worker, service binding INTEL) ---- */
+  async plaIngest(request) {
+    let b; try { b = await request.json(); } catch { return new Response(JSON.stringify({ error: "bad json" }), { status: 400 }); }
+    const P = this.pla, got = { js: 0, mnd: 0 };
+    const det = b && b.js && b.js.details;
+    if (det && typeof det === "object") for (const [id, d] of Object.entries(det).slice(0, 40)) {
+      if (!/^p\d{8}_\d{2}$/.test(id)) continue; const c = sanitizeJsDetail(d); if (c) { P.js.details[id] = c; got.js++; }
+    }
+    const days = b && b.mnd && b.mnd.days;
+    if (Array.isArray(days)) for (const d of days.slice(0, 20)) { const c = sanitizeMndDay(d); if (c) { P.mnd.days[c.id] = c; if (!P.mnd.list.some((x) => x.id === c.id)) P.mnd.list.push({ id: c.id, date: c.date }); got.mnd++; } }
+    P.mnd.list.sort((a, b) => (a.date < b.date ? 1 : -1)); P.mnd.list = P.mnd.list.slice(0, 30);
+    this.plaPrune(); await this.ctx.storage.put("pla", P);
+    return new Response(JSON.stringify({ ok: true, stored: got }), { headers: { "Content-Type": "application/json" } });
+  }
+  plaPrune() {
+    const P = this.pla, keepMnd = new Set(P.mnd.list.map((x) => x.id)), keepJs = new Set(P.js.events.map((e) => e.id));
+    for (const k of Object.keys(P.mnd.days)) if (!keepMnd.has(k)) delete P.mnd.days[k];
+    for (const k of Object.keys(P.js.details)) if (!keepJs.has(k)) delete P.js.details[k];
+  }
+  async intel(path) {
+    const r = await this.env.INTEL.fetch("https://intel" + path);
+    let j = null; try { j = await r.json(); } catch { /* not json */ }
+    if (!r.ok || !j || j.error) throw new Error((j && j.error) || "INTEL HTTP " + r.status);
+    return j;
+  }
+  /** Throttled refresh: MND list every 20 min (+ up to 3 missing detail pages per run), Joint Staff index every 30 min. Errors are recorded, never thrown (other data keeps being served). */
+  async plaRefresh(force) {
+    if (!this.env.INTEL) return { skipped: "no INTEL binding" };
+    if (this.plaBusy) return { busy: true };
+    this.plaBusy = true; const now = Date.now(), P = this.pla, rep = {};
+    try {
+      const M = P.mnd;
+      const missing = () => M.list.filter((l) => !M.days[l.id] && (M.fail || {})[l.id] !== 9).map((l) => l.id);
+      if (force || now - (M.listAt || 0) > 20 * 60000 || missing().length) {
+        try {
+          if (force || now - (M.listAt || 0) > 20 * 60000) { const j = await this.intel("/mnd/list"); M.list = j.days.slice(0, 14).map((d) => ({ id: d.id, date: d.date })); M.listAt = now; rep.mndList = M.list.length; }
+          M.fail = M.fail || {}; rep.mnd = [];
+          for (const id of missing().slice(0, force ? 5 : 3)) {
+            try { const j = await this.intel("/mnd/detail/" + id); const d = sanitizeMndDay(j.day); if (d) { M.days[id] = d; delete M.fail[id]; rep.mnd.push(id); } }
+            catch (e) { M.fail[id] = Math.min(9, (M.fail[id] || 0) + 1); if (M.fail[id] >= 6) M.fail[id] = 9; M.err = "detail " + id + ": " + String((e && e.message) || e).slice(0, 100); rep.mndErr = M.err; }
+          }
+          if (!rep.mndErr) { M.err = null; M.okAt = now; }
+          else if (rep.mnd.length) M.okAt = now;
+        } catch (e) { M.err = String((e && e.message) || e).slice(0, 120); rep.mndErr = M.err; }
+      }
+      const J = P.js;
+      if (force || now - (J.at || 0) > 30 * 60000) {
+        J.at = now;
+        try {
+          const j = await this.intel("/js/index"); J.events = pruneJsEvents(j.events, now); J.err = null; J.okAt = now; rep.js = J.events.length;
+        } catch (e) { J.err = String((e && e.message) || e).slice(0, 120); rep.jsErr = J.err; }
+      }
+      if (Object.keys(rep).length) { this.plaPrune(); await this.ctx.storage.put("pla", P); }
+    } finally { this.plaBusy = false; }
+    return rep;
   }
 
   /* ---- AIS ---- */

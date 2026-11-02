@@ -1,3 +1,4 @@
+import { ccgHull, decodeCcgHull } from "./intel.mjs";
 /* AIS helpers: merge aisstream.io messages into a per-MMSI map; China Coast Guard heuristic. Pure functions. */
 // Taiwan and neighbouring waters. aisstream's terrestrial coverage right around Taiwan is almost empty (measured: 1 vessel / 2 min inside 20–27.5N 118–124.5E),
 // while Hong Kong / S. China and Japan are well covered, so the box reaches out to include them.
@@ -42,6 +43,7 @@ export const MAX_SHIPS_STORED = 4000;
 /** Lower = more interesting. CCG first, then commercial / special-purpose ships, then unknown, then fishing boats (moving before stationary). */
 export function shipRank(s) {
   if (isCcg(s) || isPlan(s)) return 0;
+  if (isGov(s)) return 0.5;
   const t = s.type || 0, moving = s.sog != null && s.sog > 0.5;
   if (t === 30 || t === 0) return moving ? 3 : 4; // fishing / type unknown (mostly small boats)
   return 1 + (moving ? 0 : 0.5);
@@ -51,7 +53,10 @@ export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
   const out = [];
   for (const s of Object.values(map)) {
     if (s.lat == null || !s.t || now - s.t > keepMs) continue;
-    out.push({ mmsi: s.mmsi, name: s.name || null, lat: s.lat, lon: s.lon, sog: s.sog != null ? s.sog : null, cog: s.cog != null ? s.cog : null, hdg: s.hdg != null ? s.hdg : null, type: s.type || null, dest: s.dest || null, nav: s.nav != null ? s.nav : null, ageSec: Math.round((now - s.t) / 1000), ccg: isCcg(s), plan: isPlan(s), src: s.src || "ais", _r: shipRank(s) });
+    const o = { mmsi: s.mmsi, name: s.name || null, lat: s.lat, lon: s.lon, sog: s.sog != null ? s.sog : null, cog: s.cog != null ? s.cog : null, hdg: s.hdg != null ? s.hdg : null, type: s.type || null, dest: s.dest || null, nav: s.nav != null ? s.nav : null, ageSec: Math.round((now - s.t) / 1000), ccg: isCcg(s), plan: isPlan(s), src: s.src || "ais", _r: shipRank(s) };
+    const why = ccgWhy(s); if (why) { o.ccgBy = why; const hull = ccgHull(s.name); if (hull) { o.hull = hull; const b = decodeCcgHull(hull); if (b) { o.bureau = b.short; o.bureauKind = b.kind; } } }
+    else if (isGov(s)) o.gov = true;
+    out.push(o);
   }
   out.sort((a, b) => a._r - b._r || a.ageSec - b.ageSec);
   const list = out.slice(0, cap); for (const o of list) delete o._r;
@@ -110,17 +115,28 @@ export function applyMpb(map, r, now) {
 }
 
 /**
- * Heuristic only (AIS has no "coast guard" flag): name looks like a China Coast Guard hull
- * (HAIJING / HAI JING / ZHONGGUO HAIJIAN / COAST GUARD / CCG nnnn / 海警), or law-enforcement type 55 under a Chinese MMSI prefix (412/413/414).
- * Ship_and_Cargo_Type 30 (fishing) never matches on the MMSI prefix alone, nor do HAIXUN (maritime-safety patrol) names — names like HAIJING still match whatever the type.
+ * Heuristic only (AIS has no "coast guard" flag). Why a vessel is labelled "suspected China Coast Guard" (first match wins; `ccgWhy` returns the reason code):
+ *  - "name":  name looks like a CCG hull (HAIJING / HAI JING / ZHONGGUO HAIJIAN / COAST GUARD / CCG nnnn / 海警 …) — whatever the type
+ *  - "block": MMSI 413875xxx — the sub-range of the Chinese 413 MID in which CCG ships have been seen to transmit (observed, not an official allocation; fishing type 30 excluded)
+ *  - "known": this MMSI was previously seen with a CCG name (remembered in KV by the Worker; `s.known` is set by the caller) — e.g. it now broadcasts a blank/other name
+ * A type-55 (law enforcement) vessel under a Chinese MMSI prefix (412/413/414) that matches none of the above is NOT called CCG any more — see `isGov` (generic "government vessel").
  */
-export function isCcg(s) {
-  const name = (s.name || "").toUpperCase();
-  if (/(^|[^A-Z])(HAI ?JING|ZHONGGUO ?HAI ?(JING|JIAN)|CHINA ?COAST ?GUARD|CHINA ?COASTGUARD|CCG ?\d{3,5})([^A-Z]|$)/.test(name)) return true; // name matches always count
-  if (/海警|海警局/.test(s.name || "")) return true;
-  // MMSI-prefix-only match: law-enforcement type 55 under a Chinese MMSI prefix. Fishing boats (type 30) are explicitly excluded.
-  if (s.type === 30) return false;
-  if (/HAI ?XUN|海巡|海事/i.test(s.name || "")) return false; // HAIXUN = China Maritime Safety Administration patrol ships (also type 55), not the coast guard
+export function ccgWhy(s) {
+  const raw = s.name || "", name = raw.toUpperCase();
+  if (/(^|[^A-Z])(HAI ?JING|ZHONGGUO ?HAI ?(JING|JIAN)|CHINA ?COAST ?GUARD|CHINA ?COASTGUARD|CCG ?\d{3,5})([^A-Z]|$)/.test(name) || /CHINACOASTGUARD\d*/.test(name)) return "name";
+  if (/海警/.test(raw)) return "name";
+  if (s.type === 30) return null;
+  if (/HAI ?XUN|海巡|海事/i.test(raw)) return null; // HAIXUN = China Maritime Safety Administration patrol ships (also type 55), not the coast guard
+  if (/^413875/.test(s.mmsi || "")) return "block";
+  if (s.known) return "known";
+  return null;
+}
+export function isCcg(s) { return ccgWhy(s) != null; }
+
+/** Generic "government vessel" label: AIS type 55 (law enforcement) under a Chinese MMSI prefix (412/413/414) that is not matched by any CCG rule above (e.g. "XIA MEN HAI YANG 01", HAIXUN patrol ships).
+ *  Softer than "suspected CCG" on purpose: type 55 alone also covers maritime-safety, fisheries-patrol and customs craft. Fishing type 30 never matches. */
+export function isGov(s) {
+  if (isCcg(s) || s.type === 30) return false;
   return s.type === 55 && /^41[234]/.test(s.mmsi || "");
 }
 

@@ -1,0 +1,8 @@
+# Reference config (the deployed copy was uploaded through the Cloudflare API, see README.md in this folder).
+name = "pla-intel"
+main = "dist/worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = false          # no public route: only the main Worker reaches it through the INTEL service binding
+
+[placement]
+region = "gcp:asia-east1"    # Changhua, Taiwan -> mnd.gov.tw detail pages answer 200 (other regions get "403 Access denied.")

@@ -28,21 +28,30 @@ export function hexCountry(hex) {
  *  - Chinese ICAO block 0x780000-0x7BFFFF (Hong Kong 0x789xxx and Taiwan 0x899xxx are carved out by hexCountry)
  *  - type designator typical of PLAAF/PLAN airframes (J-10/11/15/16/20/35, H-6, Y-8/9/20, KJ-xxx, JH-7, Z-8/9/10/18/20, WZ-, GJ-; Su-30/35 only together with a Chinese hex)
  *  - callsign pattern typical of PLA traffic (PLA…/CHN<digit>…); note CCA/CES/CSN… are civil airlines and never match.
- *  Flag when: (military ∧ China hex) ∨ (military ∧ PLA type) ∨ (China hex ∧ PLA type) ∨ (military-or-China-hex ∧ PLA callsign). Never from the hex alone. */
-const PLA_TYPE = /^(J-?(10|11|15|16|20|35)[A-Z]?|JH-?7[A-Z]?|H-?6[A-Z]?|Y-?(8|9|20)[A-Z]?|KJ-?\d{3,4}[A-Z]?|Z-?(8|9|10|18|19|20)[A-Z]?|WZ-?\d+|GJ-?\d+)$/i;
+ *  - hex in 0x7A1000-0x7A4FFF (see PLA_HEX_BLOCK): a block that is almost entirely military-registered airframes
+ *  Flag when: (military ∧ China hex) ∨ (military ∧ PLA type) ∨ (China hex ∧ PLA type) ∨ (military-or-China-hex ∧ PLA callsign) ∨ hex in the PLA-prior block. Never from the generic Chinese hex range alone. */
+const PLA_TYPE = /^(J-?(10|11|15|16|20|35)[A-Z]?|JH-?7[A-Z]?|H-?6[A-Z]?|TU-?16|Y-?(8|9|20)[A-Z]?|KJ-?\d{3,4}[A-Z]?|Z-?(8|9|10|18|19|20)[A-Z]?|WZ-?\d+|GJ-?\d+)$/i;
+// ICAO type designators the tar1090 database uses for PLA airframes that are also common in civil/foreign fleets (Y-8/Y-9 = AN12, Il-76 incl. KJ-2000 / tankers, Mi-8/17, Z-9 = AS65 / AS35, ...):
+// they only count together with a Chinese hex (TU16 = H-6 bomber is flown by nobody else; it is in PLA_TYPE).
+const PLA_TYPE_CN = /^(AN12|IL76|MI8|MI17|MI171|AS65|AS35|MI38)$/i;
+/** Hex block 0x7A1000-0x7A4FFF: in the tar1090-db snapshot used for this check (aircraft.csv, 2026-11) 375 of its 383 entries are military-flagged (Y-20, WZ-10, Mi-8, AS365, An-12/Y-8, Tu-16/H-6, Il-76...),
+ *  against 68 of ~7,200 elsewhere in 0x780000-0x7BFFFF. A weak PRIOR that the airframe is PLA, not an identification. */
+export const PLA_HEX_BLOCK = [0x7A1000, 0x7A4FFF];
+export const inPlaBlock = (hex) => { const n = parseInt(String(hex || "").replace(/^~/, ""), 16); return isFinite(n) && n >= PLA_HEX_BLOCK[0] && n <= PLA_HEX_BLOCK[1]; };
 const PLA_CALL = /^(PLA[A-Z]*\d*|PLAAF\d*|PLAN\d*|CHN\d+[A-Z]*)$/i;
 export function plaSuspect(a) {
   if (!a || typeof a.hex !== "string") return null;
   const hex = a.hex.replace(/^~/, "").toLowerCase();
   const mil = (Number(a.dbFlags) & 1) === 1, cn = hexCountry(hex) === "China";
   const t = typeof a.t === "string" ? a.t.trim() : "", cs = typeof a.flight === "string" ? a.flight.trim() : "";
-  const typ = PLA_TYPE.test(t) || (cn && /^SU3[05]$/i.test(t)), call = PLA_CALL.test(cs);
+  const typ = PLA_TYPE.test(t) || (cn && (/^SU3[05]$/i.test(t) || PLA_TYPE_CN.test(t))), call = PLA_CALL.test(cs), blk = inPlaBlock(hex);
   const why = [];
   if (mil) why.push("mil");
   if (cn) why.push("cn-hex");
   if (typ) why.push("type");
   if (call) why.push("callsign");
-  const hit = (mil && cn) || (mil && typ) || (cn && typ) || ((mil || cn) && call);
+  if (blk) why.push("pla-block");
+  const hit = (mil && cn) || (mil && typ) || (cn && typ) || ((mil || cn) && call) || blk;
   return hit ? why : null;
 }
 
