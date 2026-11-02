@@ -205,3 +205,18 @@ small { font-size: 9px; }
 /* suspected PLA aircraft (heuristic) */
 .ge-plawarn b { color: #ff6b61; }
 .ge-plaauth { border-left: 2px solid var(--amber, #ffb020); padding-left: 8px; color: rgba(255,255,255,.8); }
+
+/* always-visible warning tags over suspected CCG / PLAN ships and PLA aircraft */
+.ge-warnlayer { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.ge-wtag { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; --wc: #ff3b30; }
+.ge-wtag-plan { --wc: #ff0055; } .ge-wtag-air { --wc: #ff3b30; }
+.ge-wring { position: absolute; left: -17px; top: -17px; width: 34px; height: 34px; box-sizing: border-box; border: 2px solid var(--wc); border-radius: 50%; animation: ge-wpulse 1.6s ease-out infinite; }
+.ge-wring2 { animation-delay: .8s; }
+@keyframes ge-wpulse { 0% { transform: scale(.45); opacity: .95; } 100% { transform: scale(1.5); opacity: 0; } }
+.ge-wlab { position: absolute; left: 0; bottom: 24px; transform: translateX(-50%); white-space: nowrap; font-weight: 800; font-size: 12px; line-height: 1; letter-spacing: .04em;
+  color: #fff; background: var(--wc); padding: 4px 7px; border-radius: 3px; border: 1px solid rgba(255,255,255,.85); box-shadow: 0 0 0 1px rgba(0,0,0,.6), 0 2px 8px rgba(0,0,0,.7); }
+.ge-wname { position: absolute; left: 0; top: 22px; transform: translateX(-50%); white-space: nowrap; font-size: 9px; letter-spacing: .08em; color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.ge-wlab::after { content: ""; position: absolute; left: 50%; top: 100%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--wc); }
+@media (prefers-reduced-motion: reduce) { .ge-wring { animation: none; opacity: .8; } }
+.ge-legend svg { margin-right: 1px; }
+.ge-plan { background: rgba(255,0,85,.9) !important; border-color: #ff0055; }

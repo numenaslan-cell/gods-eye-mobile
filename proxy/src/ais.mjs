@@ -41,7 +41,7 @@ export const MAX_SHIPS_STORED = 4000;
 
 /** Lower = more interesting. CCG first, then commercial / special-purpose ships, then unknown, then fishing boats (moving before stationary). */
 export function shipRank(s) {
-  if (isCcg(s)) return 0;
+  if (isCcg(s) || isPlan(s)) return 0;
   const t = s.type || 0, moving = s.sog != null && s.sog > 0.5;
   if (t === 30 || t === 0) return moving ? 3 : 4; // fishing / type unknown (mostly small boats)
   return 1 + (moving ? 0 : 0.5);
@@ -51,7 +51,7 @@ export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
   const out = [];
   for (const s of Object.values(map)) {
     if (s.lat == null || !s.t || now - s.t > keepMs) continue;
-    out.push({ mmsi: s.mmsi, name: s.name || null, lat: s.lat, lon: s.lon, sog: s.sog != null ? s.sog : null, cog: s.cog != null ? s.cog : null, hdg: s.hdg != null ? s.hdg : null, type: s.type || null, dest: s.dest || null, nav: s.nav != null ? s.nav : null, ageSec: Math.round((now - s.t) / 1000), ccg: isCcg(s), src: s.src || "ais", _r: shipRank(s) });
+    out.push({ mmsi: s.mmsi, name: s.name || null, lat: s.lat, lon: s.lon, sog: s.sog != null ? s.sog : null, cog: s.cog != null ? s.cog : null, hdg: s.hdg != null ? s.hdg : null, type: s.type || null, dest: s.dest || null, nav: s.nav != null ? s.nav : null, ageSec: Math.round((now - s.t) / 1000), ccg: isCcg(s), plan: isPlan(s), src: s.src || "ais", _r: shipRank(s) });
   }
   out.sort((a, b) => a._r - b._r || a.ageSec - b.ageSec);
   const list = out.slice(0, cap); for (const o of list) delete o._r;
@@ -122,4 +122,17 @@ export function isCcg(s) {
   if (s.type === 30) return false;
   if (/HAI ?XUN|海巡|海事/i.test(s.name || "")) return false; // HAIXUN = China Maritime Safety Administration patrol ships (also type 55), not the coast guard
   return s.type === 55 && /^41[234]/.test(s.mmsi || "");
+}
+
+/** Suspected PLA Navy vessel (heuristic, label for humans — "疑似共軍"). Matches:
+ *  - names: HAIJUN / HAI JUN, 海軍 / 海军, 解放軍, "PLA NAVY", or "PLAN" followed by a hull number (e.g. "PLAN 989") — a bare word "PLAN" (yachts, "PLAN B") does not count;
+ *  - MMSI prefix 412/413 together with AIS ship type 35 (military operations).
+ *  Never a fishing-only match (type 30 is excluded from the MMSI path), and anything already flagged as China Coast Guard is not also PLAN. */
+export function isPlan(s) {
+  if (isCcg(s)) return false;
+  const raw = s.name || "", name = raw.toUpperCase();
+  if (/(^|[^A-Z])(HAI ?JUN|PLA ?NAVY|PLAN[ -]?\d{2,4})([^A-Z]|$)/.test(name)) return true;
+  if (/海軍|海军|解放軍|解放军/.test(raw)) return true;
+  if (s.type === 30) return false;
+  return s.type === 35 && /^41[23]/.test(s.mmsi || "");
 }

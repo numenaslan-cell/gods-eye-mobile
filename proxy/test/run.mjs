@@ -1,7 +1,7 @@
 // node proxy/test/run.mjs  — unit tests for the Worker's pure logic (no network, no Cloudflare runtime needed; Node >= 20).
 import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
-import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg } from "../src/ais.mjs";
+import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
@@ -218,4 +218,18 @@ console.log(n + " tests passed");
   assert.equal(n.pla, true); assert.ok(n.plaWhy.includes("mil"));
   assert.equal("pla" in normalizeAdsb({ hex: "899123", lat: 24, lon: 121, alt_baro: 30000 }), false, "no pla key on normal traffic");
   console.log("ok pla heuristic");
+}
+
+// ---- PLAN (suspected PLA Navy) heuristic ----
+{
+  assert.ok(isPlan({ name: "PLAN 989", mmsi: "1" })); assert.ok(isPlan({ name: "HAIJUN 12", mmsi: "1" })); assert.ok(isPlan({ name: "中國海軍 17", mmsi: "1" }));
+  assert.ok(isPlan({ name: "PLA NAVY", mmsi: "1" })); assert.ok(isPlan({ name: "x", type: 35, mmsi: "412123456" })); assert.ok(isPlan({ name: "x", type: 35, mmsi: "413123456" }));
+  assert.ok(!isPlan({ name: "PLAN B", type: 37, mmsi: "319000000" }), "bare PLAN word (yacht) does not count");
+  assert.ok(!isPlan({ name: "x", type: 35, mmsi: "366000000" }), "type 35 under a foreign MMSI is not PLAN");
+  assert.ok(!isPlan({ name: "MINLONGYU61687", type: 30, mmsi: "412446258" }), "fishing never");
+  assert.ok(!isPlan({ name: "x", type: 30, mmsi: "412446258" }) && !isPlan({ name: "x", type: 55, mmsi: "412446258" }), "MMSI prefix alone / type 55 never");
+  assert.ok(!isPlan({ name: "HAI JING 2102", mmsi: "412000000" }), "CCG is not also PLAN");
+  const m = { a: { mmsi: "412000111", name: "PLAN 989", lat: 24, lon: 122, t: 1000, type: 35, sog: 5 }, b: { mmsi: "412000112", name: "HAI JING 2901", lat: 24, lon: 122, t: 1000 } };
+  const pub = publicShips(m, 2000, 60000); assert.equal(pub.find((x) => x.mmsi === "412000111").plan, true); assert.equal(pub.find((x) => x.mmsi === "412000112").plan, false); assert.equal(pub.find((x) => x.mmsi === "412000112").ccg, true);
+  console.log("ok plan heuristic");
 }

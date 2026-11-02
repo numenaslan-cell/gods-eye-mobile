@@ -4110,8 +4110,40 @@ void main() {
   function quakeAgo(t) { var m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? m + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; }
 
   /* ---- ship marker colours by class (distinct from the white aircraft cones) ---- */
-  var SHIP_COLORS = { cargo: 0x2ee6ff, tanker: 0xff9f1c, pax: 0xd18bff, fish: 0x6dff8a, other: 0x9aa7b0, ccg: 0xff3b30 };
-  var SHIP_CSS = { cargo: "#2ee6ff", tanker: "#ff9f1c", pax: "#d18bff", fish: "#6dff8a", other: "#9aa7b0", ccg: "#ff3b30" };
+  var SHIP_COLORS = { cargo: 0x2ee6ff, tanker: 0xff9f1c, pax: 0xd18bff, fish: 0x6dff8a, other: 0x9aa7b0, ccg: 0xff3b30, plan: 0xff0055 };
+  var SHIP_CSS = { cargo: "#2ee6ff", tanker: "#ff9f1c", pax: "#d18bff", fish: "#6dff8a", other: "#9aa7b0", ccg: "#ff3b30", plan: "#ff0055" };
+
+  /* ---- marker silhouettes (unit size, nose / bow = +z). Aircraft = plane with swept wings; ships = pointed hull with a deckhouse.
+     Convex pieces are shared by the 3-D geometry (vector triangles -> razor sharp at any DPR) and the legend SVGs. ---- */
+  var PLANE_PIECES = [
+    { fill: 1, pts: [[0, 0.5], [0.06, 0.38], [0.06, -0.3], [0, -0.46], [-0.06, -0.3], [-0.06, 0.38]] },          // fuselage
+    { fill: 1, pts: [[0.05, 0.12], [0.5, -0.16], [0.5, -0.25], [0.05, -0.07]] },                                  // right wing (swept back)
+    { fill: 1, pts: [[-0.05, 0.12], [-0.5, -0.16], [-0.5, -0.25], [-0.05, -0.07]] },                              // left wing
+    { fill: 1, pts: [[0.04, -0.32], [0.2, -0.46], [0.2, -0.51], [0.04, -0.42]] },                                 // right tailplane
+    { fill: 1, pts: [[-0.04, -0.32], [-0.2, -0.46], [-0.2, -0.51], [-0.04, -0.42]] },                             // left tailplane
+  ];
+  var HULL_PIECES = [
+    { fill: 1, pts: [[0, 0.5], [0.2, 0.14], [0.2, -0.5], [-0.2, -0.5], [-0.2, 0.14]] },                           // hull
+    { fill: 0.42, pts: [[-0.11, 0.02], [0.11, 0.02], [0.11, -0.3], [-0.11, -0.3]], lift: 1 },                      // deckhouse (darker)
+  ];
+  function shapeGeometry(pieces, outline) { // flat triangle fans, both windings (visible from either side); optional dark halo behind
+    var pos = [], col = [];
+    function fan(pts, k, y, c) {
+      for (var i = 1; i < pts.length - 1; i++) [0, i, i + 1].forEach(function (j) { pos.push(pts[j][0] * k, y, pts[j][1] * k); col.push(c, c, c); });
+      for (var i2 = 1; i2 < pts.length - 1; i2++) [i2 + 1, i2, 0].forEach(function (j) { pos.push(pts[j][0] * k, y, pts[j][1] * k); col.push(c, c, c); });
+    }
+    if (outline) pieces.forEach(function (pc) { if (!pc.lift) fan(pc.pts, outline, -0.03, 0.04); });
+    pieces.forEach(function (pc) { fan(pc.pts, 1, pc.lift ? 0.03 : 0, pc.fill); });
+    var g = new T.BufferGeometry();
+    g.setAttribute("position", new T.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new T.Float32BufferAttribute(col, 3));
+    return g;
+  }
+  function ShapeIcon(p) { // SVG legend icon of the same silhouette (x right, bow up)
+    var sz = p.size || 14, pieces = p.kind === "plane" ? PLANE_PIECES : HULL_PIECES;
+    return h("svg", { width: sz, height: sz, viewBox: "-0.62 -0.62 1.24 1.24", "aria-hidden": true, style: { flex: "none" } },
+      pieces.map(function (pc, i) { return h("polygon", { key: i, points: pc.pts.map(function (q) { return q[0] + "," + (-q[1]); }).join(" "), fill: p.color, fillOpacity: pc.fill < 1 ? 0.45 : 1, stroke: "#02060a", strokeWidth: 0.07, strokeLinejoin: "round", paintOrder: "stroke" }); }));
+  }
+  var WARN_TAGS = { ccg: "⚠️ 疑似海警", plan: "⚠️ 疑似共軍", air: "⚠️ 疑似共機" };
 
   /* ---- local-time helpers ---- */
   function hm(d) { return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); }
@@ -4233,7 +4265,7 @@ void main() {
 
     var sList = ships.list;
     var selShip = selShipId ? sList.find(function (x) { return x.id === selShipId; }) || null : null;
-    var ccgList = sList.filter(function (x) { return x.ccg; });
+    var ccgList = sList.filter(function (x) { return x.ccg; }), planList = sList.filter(function (x) { return x.plan; });
     var plaAir = list.filter(function (x) { return x.pla; });
     var selPass = selPassKey ? passes.list.find(function (x) { return x.key === selPassKey; }) || null : null;
     var pushIssActive = !!(pushInfo && pushInfo.subscribed && pushInfo.prefs && pushInfo.prefs.iss);
@@ -4262,7 +4294,7 @@ void main() {
       if (q && fly) { setPlace(""); flyTo(q.lat, q.lon, isNarrow() ? 1.45 : 1.3, true); }
     }
     function cycleShip(dir, onlyCcg) {
-      var pool = onlyCcg ? ccgList : sList; if (!pool.length) return;
+      var pool = onlyCcg === "plan" ? planList : onlyCcg ? ccgList : sList; if (!pool.length) return;
       var i = pool.findIndex(function (x) { return x.id === selShipId; });
       var n = i < 0 ? (dir > 0 ? 0 : pool.length - 1) : (i + dir + pool.length) % pool.length;
       setSelShipId(pool[n].id);
@@ -4544,10 +4576,10 @@ void main() {
 
       // flights
       var flightGroup = new T.Group(); scene.add(flightGroup);
-      var coneGeo = new T.ConeGeometry(0.006, 0.018, 3); coneGeo.rotateX(Math.PI / 2);
-      var flMat = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
-      var selMat = new T.MeshBasicMaterial({ color: 0xffe600 });
-      var flPlaMat = new T.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: 0.95 }); // suspected PLA aircraft (heuristic)
+      var planeGeo = shapeGeometry(PLANE_PIECES, 1.2);
+      var flMat = new T.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.96, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+      var selMat = new T.MeshBasicMaterial({ color: 0xffe600, vertexColors: true });
+      var flPlaMat = new T.MeshBasicMaterial({ color: 0xff3b30, vertexColors: true, transparent: true, opacity: 1 }); // suspected PLA aircraft (heuristic)
       var meshes = {}; // id -> {mesh, fl}
       var trailGeo = new T.BufferGeometry();
       var trailLine = new T.Line(trailGeo, new T.LineBasicMaterial({ color: 0xffe63b, transparent: true, opacity: 0.9 }));
@@ -4555,14 +4587,9 @@ void main() {
 
       // ships: flat hull-shaped markers (bow = +Z), coloured by class — visually distinct from the white aircraft cones
       var shipGroup = new T.Group(); scene.add(shipGroup);
-      var hullGeo = new T.BufferGeometry();
-      (function () {
-        var V = [[0, 0, 0.55], [0.3, 0, 0.12], [0.3, 0, -0.5], [-0.3, 0, -0.5], [-0.3, 0, 0.12]], tri = [[0, 1, 4], [1, 2, 3], [1, 3, 4]], a = [];
-        tri.forEach(function (t) { t.forEach(function (i) { a.push(V[i][0] * 0.02, V[i][1], V[i][2] * 0.02); }); t.slice().reverse().forEach(function (i) { a.push(V[i][0] * 0.02, V[i][1], V[i][2] * 0.02); }); }); // both windings = visible from either side
-        hullGeo.setAttribute("position", new T.Float32BufferAttribute(a, 3));
-      })();
-      var shipMats = {}; Object.keys(SHIP_COLORS).forEach(function (k) { shipMats[k] = new T.MeshBasicMaterial({ color: SHIP_COLORS[k], transparent: true, opacity: 0.95 }); });
-      var shipSelMat = new T.MeshBasicMaterial({ color: 0xffffff });
+      var hullGeo = shapeGeometry(HULL_PIECES, 1.22);
+      var shipMats = {}; Object.keys(SHIP_COLORS).forEach(function (k) { shipMats[k] = new T.MeshBasicMaterial({ color: SHIP_COLORS[k], vertexColors: true, transparent: true, opacity: k === "ccg" || k === "plan" ? 1 : 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }); });
+      var shipSelMat = new T.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
       var shipMeshes = {}; // id -> {mesh, sh}
       // earthquakes: pulsing rings sized by magnitude + a solid core (rings/discs built by hand: the vendor bundle has no Ring/Circle geometry)
       var quakeGroup = new T.Group(); scene.add(quakeGroup);
@@ -4623,12 +4650,14 @@ void main() {
         controls.update();
       })();
 
+      var warnFlightIds = [], warnShipIds = [];
       function syncFlights() {
         var st = Data.state.flights, seen = {};
+        warnFlightIds = st.list.filter(function (x) { return x.pla; }).map(function (x) { return x.id; });
         st.list.forEach(function (fl) {
           seen[fl.id] = 1;
           var e = meshes[fl.id];
-          if (!e) { var m = new T.Mesh(coneGeo, fl.pla ? flPlaMat : flMat); flightGroup.add(m); e = meshes[fl.id] = { mesh: m, fl: fl }; }
+          if (!e) { var m = new T.Mesh(planeGeo, fl.pla ? flPlaMat : flMat); flightGroup.add(m); e = meshes[fl.id] = { mesh: m, fl: fl }; }
           e.fl = fl; if (e.mesh.material !== selMat) e.mesh.material = fl.pla ? flPlaMat : flMat;
         });
         Object.keys(meshes).forEach(function (id) { if (!seen[id]) { flightGroup.remove(meshes[id].mesh); delete meshes[id]; } });
@@ -4636,6 +4665,7 @@ void main() {
 
       function syncShips() {
         var st = Data.state.ships, seen = {};
+        warnShipIds = st.list.filter(function (x) { return x.ccg || x.plan; }).map(function (x) { return x.id; });
         st.list.forEach(function (sh) {
           seen[sh.id] = 1;
           var e = shipMeshes[sh.id];
@@ -4703,6 +4733,49 @@ void main() {
       }
 
       var raf = 0, lastTrailAt = 0, lastOffsetAt = 0;
+      // always-visible warning tags (HTML overlay above the canvas): pulsing ring + "⚠️ 疑似海警 / 疑似共軍 / 疑似共機" label
+      var warnLayer = document.createElement("div"); warnLayer.className = "ge-warnlayer"; warnLayer.setAttribute("aria-hidden", "true"); canvas.parentNode.insertBefore(warnLayer, canvas.nextSibling); // above the globe, below the HUD panels
+      var warnEls = {}, tmpWv = new T.Vector3();
+      function warnTag(key, kind, name) {
+        var el = warnEls[key];
+        if (!el) {
+          el = warnEls[key] = document.createElement("div"); el.className = "ge-wtag ge-wtag-" + kind;
+          el.innerHTML = '<i class="ge-wring"></i><i class="ge-wring ge-wring2"></i><span class="ge-wlab"></span><small class="ge-wname"></small>';
+          el.children[2].textContent = WARN_TAGS[kind]; el.children[3].textContent = name || ""; warnLayer.appendChild(el);
+        }
+        return el;
+      }
+      function updateWarnTags(lay, camLen) {
+        var used = {}, W = root.clientWidth, H = root.clientHeight, camN2 = camera.position.clone().normalize(), cands = [];
+        function add(kind, id, mesh, name) {
+          tmpWv.copy(mesh.position); var up = tmpWv.clone().normalize();
+          if (up.dot(camN2) <= 1 / camLen - 0.02) return;
+          var pr = tmpWv.project(camera); if (pr.z >= 1 || Math.abs(pr.x) > 1.08 || Math.abs(pr.y) > 1.08) return;
+          cands.push({ key: kind + ":" + id, kind: kind, name: name, x: (pr.x * 0.5 + 0.5) * W, y: (-pr.y * 0.5 + 0.5) * H, d: pr.x * pr.x + pr.y * pr.y });
+        }
+        if (lay.ships) warnShipIds.forEach(function (id) { var e = shipMeshes[id]; if (e) add(e.sh.plan ? "plan" : "ccg", id, e.mesh, e.sh.name); });
+        if (lay.flights) warnFlightIds.forEach(function (id) { var e = meshes[id]; if (e) add("air", id, e.mesh, e.fl.callsign); });
+        var PRI = { plan: 0, ccg: 1, air: 2 };
+        cands.sort(function (a, b) { return PRI[a.kind] - PRI[b.kind] || a.d - b.d; });
+        var placed = [], showName = camLen < 1.8;
+        cands.slice(0, 16).forEach(function (c, i) {
+          var el = warnTag(c.key, c.kind, c.name); used[c.key] = 1;
+          // stack overlapping labels upwards (each label ≈ 100 x 20 px, drawn 24 px above its ring); hide the label (keep the ring) if no free slot
+          var lift = -1, w = 108, hgt = 29;
+          for (var k2 = 0; k2 < 6 && lift < 0; k2++) {
+            var bx0 = c.x - w / 2, by0 = c.y - 24 - hgt - k2 * (hgt + 2), ok = true;
+            for (var q = 0; q < placed.length; q++) { var pb = placed[q]; if (bx0 < pb[2] && bx0 + w > pb[0] && by0 < pb[3] && by0 + hgt > pb[1]) { ok = false; break; } }
+            if (ok) { lift = k2; placed.push([bx0, by0, bx0 + w, by0 + hgt]); }
+          }
+          el.style.transform = "translate(" + c.x.toFixed(1) + "px," + c.y.toFixed(1) + "px)";
+          el.style.zIndex = 100 - i; if (el.style.display === "none") el.style.display = "";
+          var lab = el.children[2], nm = el.children[3];
+          lab.style.display = lift < 0 ? "none" : ""; lab.style.marginBottom = lift > 0 ? (lift * (hgt + 2)) + "px" : "0";
+          nm.style.display = showName && lift === 0 ? "" : "none";
+        });
+        Object.keys(warnEls).forEach(function (k) { if (!used[k]) { warnEls[k].style.display = "none"; if (!warnEls[k].__t) warnEls[k].__t = Date.now(); else if (Date.now() - warnEls[k].__t > 30000) { warnLayer.removeChild(warnEls[k]); delete warnEls[k]; } } else warnEls[k].__t = 0; });
+      }
+
       function frame() {
         raf = requestAnimationFrame(frame);
         var nowMs = Date.now(), m = modeRef.current, lay = layersRef.current;
@@ -4733,7 +4806,8 @@ void main() {
 
         // flights: dead-reckon, orient, scale
         var camLen = camera.position.length();
-        var k = Math.max(0.08, Math.min(1.0, 0.08 + (camLen - 1) * 0.5)); // aircraft markers shrink as you zoom in
+        // markers have a constant on-screen size (css px), so they stay crisp and readable at every zoom and shrink relative to the map when you zoom in
+        var upx = 2 * Math.tan(camera.fov * DEG / 2) * Math.max(0.02, camLen - 1) / Math.max(200, root.clientHeight || 800);
         var selFl = null, selPos = null;
         for (var id in meshes) {
           var e = meshes[id], fl = e.fl, p = deadReckon(fl, nowMs);
@@ -4748,8 +4822,8 @@ void main() {
           e.mesh.up.copy(tmpUp); e.mesh.lookAt(tmpTarget);
           var isSel = id === selRef.current;
           e.mesh.material = isSel ? selMat : e.fl.pla ? flPlaMat : flMat;
-          var s = isSel ? k * 2.2 : k;
-          e.mesh.scale.set(s, s, s);
+          var s = upx * (isSel ? 28 : e.fl.pla ? 24 : 13 + 4 * Math.max(0, Math.min(1, (camLen - 1.15) / 1.85)));
+          e.mesh.scale.set(s, s, s); e.mesh.renderOrder = e.fl.pla || isSel ? 6 : 3;
           if (isSel) { selFl = fl; selPos = { lat: p.lat, lon: p.lon, v: v }; }
         }
         // quakes: size by magnitude, two staggered expanding pulses; recent events (<24 h) pulse faster and brighter
@@ -4769,7 +4843,8 @@ void main() {
         }
         // ships: dead-reckon, orient, scale; remember the on-screen ones
         var selSh = null, selShPos = null, camN = camera.position.clone().normalize(), onScreen = 0, doCount = nowMs - lastCountAt > 500;
-        var ks = Math.max(0.1, Math.min(1.0, 0.1 + (camLen - 1) * 0.5));
+        var zt = Math.max(0, Math.min(1, (camLen - 1.15) / 1.85)), shipPx = 6 + 3 * zt; // ships get smaller when zoomed in (declutter)
+        var thin = camLen < 1.4; // close zoom: hide stationary fishing / unclassified boats so the island is not covered
         if (lay.ships) for (var sid in shipMeshes) {
           var se = shipMeshes[sid], sh = se.sh, sp = deadReckon(sh, nowMs), sv = latLonToVec(sp.lat, sp.lon, 1.008);
           se.mesh.position.copy(sv);
@@ -4779,7 +4854,8 @@ void main() {
           tmpTarget.copy(sv).add(tmpDir); se.mesh.up.copy(tmpUp); se.mesh.lookAt(tmpTarget);
           var isSelS = sid === selShipRef.current;
           se.mesh.material = isSelS ? shipSelMat : shipMats[se.cls];
-          var ss2 = isSelS ? ks * 2.4 : ks; se.mesh.scale.set(ss2, ss2, ss2);
+          var warnS = sh.ccg || sh.plan, ss2 = upx * (isSelS ? 20 : warnS ? 20 : shipPx); se.mesh.scale.set(ss2, ss2, ss2); se.mesh.renderOrder = warnS || isSelS ? 5 : 2;
+          se.mesh.visible = !(thin && !warnS && !isSelS && sh.vMs === 0 && (sh.cls === "fish" || sh.cls === "other"));
           if (isSelS) { selSh = sh; selShPos = { lat: sp.lat, lon: sp.lon, v: sv }; }
           if (doCount && tmpUp.dot(camN) > 1 / camLen - 0.02) { var q = sv.clone().project(camera); if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1) onScreen++; }
         }
@@ -4806,6 +4882,8 @@ void main() {
           }
         }
         controls.update();
+
+        updateWarnTags(lay, camLen);
 
         // selected-aircraft reticle (screen space)
         var ret = reticleRef.current;
@@ -4868,7 +4946,7 @@ void main() {
 
       api.current = { camera: camera, controls: controls, renderer: renderer, tiles: tileLayer };
       return function () {
-        cancelAnimationFrame(raf);
+        cancelAnimationFrame(raf); if (warnLayer.parentNode) warnLayer.parentNode.removeChild(warnLayer);
         canvas.removeEventListener("pointerdown", onDown); canvas.removeEventListener("pointerup", onUp);
         if (ro) ro.disconnect(); else window.removeEventListener("resize", resize);
         controls.dispose(); tileLayer.dispose(); renderer.dispose();
@@ -4894,14 +4972,14 @@ void main() {
       return [
         flights.status === "demo" && h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — flight feeds unreachable (" + (flights.error || "?") + "). Retrying…"),
         plaAir.length ? h("div", { key: "plaw", className: "ge-iss ge-plawarn" },
-          h("div", null, h("b", null, "⚠️ PLA · " + plaAir.length + " 疑似"), h("small", null, "SUSPECTED PLA AIRCRAFT ON ADS-B (heuristic)")),
-          h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: cyclePla }, "⚠️ PLA " + plaAir.length)) : null,
+          h("div", null, h("b", null, "⚠️ 疑似共機 · " + plaAir.length), h("small", null, "SUSPECTED PLA AIRCRAFT ON ADS-B (heuristic)")),
+          h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: cyclePla }, "⚠️ 疑似共機 " + plaAir.length)) : null,
         selected ? [
           h("div", { className: "ge-pick", key: "pick" },
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous aircraft", onClick: function () { cycle(-1); } }, "‹"),
             h("div", { className: "ge-pick-mid" },
               h("b", { className: "ge-cs", style: selected.pla ? { color: "#ff3b30" } : null }, (selected.pla ? "⚠️ " : "") + selected.callsign),
-              h("small", null, (selIdx + 1) + " / " + list.length + (selected.country ? " · " + selected.country : "") + (selected.type ? " · " + selected.type : "") + (selected.pla ? " · ⚠️ 疑似 PLA" : ""))),
+              h("small", null, (selIdx + 1) + " / " + list.length + (selected.country ? " · " + selected.country : "") + (selected.type ? " · " + selected.type : "") + (selected.pla ? " · ⚠️ 疑似共機" : ""))),
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Next aircraft", onClick: function () { cycle(1); } }, "›")),
           h("dl", { className: "ge-grid", key: "grid" },
             [["ALT", selected.altFt != null ? fmtN(selected.altFt) + " ft" : "--"],
@@ -4911,6 +4989,10 @@ void main() {
           selected.pla ? h("p", { key: "plan", className: "ge-note ge-warn" }, "⚠️ 疑似 PLA aircraft — heuristic: " + (selected.plaWhy || []).map(function (w) { return { mil: "ADS-B database marks it military", "cn-hex": "Chinese ICAO address block", type: "PLA-type airframe", callsign: "PLA-style callsign" }[w] || w; }).join(" + ") + ". Not an official identification; most PLA aircraft do not broadcast ADS-B — the MND daily count (PLA tab) is the authoritative number.") : null,
           h("button", { key: "follow", type: "button", className: cx("ge-btn", "ge-wide", follow && "is-on"), "aria-pressed": follow, onClick: toggleFollow }, follow ? "● FOLLOWING" : "FOLLOW AIRCRAFT"),
         ] : h("p", { key: "n", className: "ge-note" }, flights.status === "loading" ? "Contacting flight feeds…" : "NO AIRCRAFT IN RANGE"),
+        h("div", { key: "legend", className: "ge-legend" },
+          h("span", null, h(ShapeIcon, { kind: "plane", color: "#ffffff", size: 15 }), "AIRCRAFT (nose = heading)"),
+          h("span", null, h(ShapeIcon, { kind: "plane", color: "#ff3b30", size: 15 }), "⚠️ 疑似共機"),
+          h("span", null, h(ShapeIcon, { kind: "hull", color: "#9aa7b0", size: 15 }), "SHIP (bow = course)")),
         h("p", { key: "s", className: "ge-src" }, "ADS-B via " + (flights.source || "adsb.lol") + " · adsb.lol data © adsb.lol contributors, ODbL 1.0 · fallback adsb.fi (non-commercial) / OpenSky · updated " + ago(flights.updated) + " ago"),
       ];
     }
@@ -4921,7 +5003,9 @@ void main() {
       if (ships.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, ships.note || "Contacting AIS relay…"));
       bits.push(h("div", { key: "cnt", className: "ge-iss" },
         h("div", null, h("b", null, fmtN(inView) + " IN VIEW"), h("small", null, fmtN(ships.count) + " TRACKED IN REGION" + (ships.note ? " · " + ships.note : ""))),
-        ccgList.length ? h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: function () { cycleShip(1, true); } }, "⚠ CCG " + ccgList.length) : null));
+        h("div", { style: { display: "flex", gap: "6px" } },
+          ccgList.length ? h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: function () { cycleShip(1, true); } }, "⚠️ 疑似海警 " + ccgList.length) : null,
+          planList.length ? h("button", { type: "button", className: "ge-btn ge-small ge-ccg ge-plan", onClick: function () { cycleShip(1, "plan"); } }, "⚠️ 疑似共軍 " + planList.length) : null)));
       if (selShip) {
         bits.push(h("div", { className: "ge-pick", key: "pick" },
           h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous ship", onClick: function () { cycleShip(-1); } }, "‹"),
@@ -4934,7 +5018,7 @@ void main() {
            ["CRS", selShip.cog != null ? Math.round(selShip.cog) + "°" : selShip.hdg ? Math.round(selShip.hdg) + "°" : "--"],
            ["DEST", selShip.dest || "--"],
            ["AGE", ago(selShip.t)]].map(function (kv) { return row(kv[0], kv[1]); })));
-        bits.push(h("p", { key: "pos", className: "ge-note" }, fmtLL(selShip.lat, selShip.lon) + (selShip.ccg ? " · China Coast Guard guess from AIS name/type/MMSI — not an official identification" : "")));
+        bits.push(h("p", { key: "pos", className: "ge-note" }, fmtLL(selShip.lat, selShip.lon) + (selShip.ccg ? " · ⚠️ 疑似海警: China Coast Guard guess from AIS name/type/MMSI — not an official identification" : selShip.plan ? " · ⚠️ 疑似共軍: PLA Navy guess from AIS name / MMSI 412·413 + type 35 — not an official identification; most PLA ships do not transmit AIS" : "")));
         bits.push(h("button", { key: "follow", type: "button", className: cx("ge-btn", "ge-wide", sFollow && "is-on"), "aria-pressed": sFollow, onClick: toggleShipFollow }, sFollow ? "● FOLLOWING" : "FOLLOW SHIP"));
       } else {
         bits.push(h("div", { className: "ge-pick", key: "pick0" },
@@ -4942,9 +5026,11 @@ void main() {
           h("div", { className: "ge-pick-mid" }, h("small", { className: "ge-hint" }, sList.length ? "TAP A SHIP ON THE GLOBE, USE ‹ ›, OR SEARCH NAME / MMSI" : ships.status === "loading" ? "WAITING FOR AIS…" : "NO VESSELS RECEIVED YET")),
           h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Next ship", onClick: function () { cycleShip(1); } }, "›")));
       }
-      bits.push(h("div", { key: "legend", className: "ge-legend" }, [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["fish", "FISHING"], ["other", "OTHER"], ["ccg", "CCG?"]].map(function (c) {
-        return h("span", { key: c[0] }, h("i", { style: { background: SHIP_CSS[c[0]] } }), c[1]);
-      })));
+      bits.push(h("div", { key: "legend", className: "ge-legend" },
+        h("span", null, h(ShapeIcon, { kind: "plane", color: "#ffffff", size: 15 }), "AIRCRAFT"),
+        [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["fish", "FISHING"], ["other", "OTHER"], ["ccg", "疑似海警"], ["plan", "疑似共軍"]].map(function (c) {
+          return h("span", { key: c[0] }, h(ShapeIcon, { kind: "hull", color: SHIP_CSS[c[0]], size: 15 }), c[1]);
+        })));
       bits.push(h("p", { key: "src", className: "ge-src" }, "AIS: aisstream.io + 交通部航港局 (MPB) 臺灣海域船舶即時資訊, merged by MMSI via own Worker · updated " + ago(ships.updated) + " ago · not for navigation · CCG flag is a name/type heuristic"));
       return bits;
     }
