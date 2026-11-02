@@ -1,0 +1,14 @@
+# Reference config (the deployed copy was uploaded through the Cloudflare API, see README.md in this folder).
+name = "mpb-fetcher"
+main = "dist/worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[placement]
+region = "gcp:asia-east1"   # Changhua, Taiwan -> MPB accepts the egress; unplaced Workers time out
+
+[[services]]
+binding = "PROXY"
+service = "gods-eye-opensky-proxy"
+
+# secret: INGEST_TOKEN (same value as the main Worker's ingest token)

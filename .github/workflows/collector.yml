@@ -1,7 +1,8 @@
 name: collector
-# Replaces the always-on scripts/ais-collector.mjs: every ~5 min fetch Taiwan MPB AIS + CWA (+ ~60 s of aisstream) and POST to the Worker ingest routes.
-# GitHub cron is best-effort (runs can start several minutes late or be skipped under load). The run FAILS (red + e-mail from GitHub) when MPB gives 0 ships,
-# CWA fails, an ingest route answers non-2xx, or the Worker's last-updated timestamps (/api/ships .updated, /api/quakes .time) did not advance.
+# Every ~5 min: (1) POST the placed Worker `mpb-fetcher` (Taiwan-placed Cloudflare Worker, see workers/mpb-fetcher/) which fetches Taiwan MPB AIS
+# (~7,000 ships; MPB is unreachable from GitHub runners) and ingests it into the main Worker; (2) scripts/collect-once.mjs with MPB=0 does CWA + ~60 s of aisstream.
+# GitHub cron is best-effort (runs can start several minutes late or be skipped under load). The run FAILS (red + e-mail from GitHub) when mpb-fetcher answers
+# non-2xx / 0 ships / ingest not ok, the Worker's mpbAgeSec is stale, CWA fails, an ingest route answers non-2xx, or /api/ships|/api/quakes timestamps did not advance.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -14,17 +15,43 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22   # global WebSocket needs Node >= 22 (Node 20 has none without a flag)
-      - name: Collect once and ingest
+      - name: MPB via placed Worker (mpb-fetcher)
+        id: mpb
+        env:
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          FETCHER_URL: https://mpb-fetcher.numenaslan.workers.dev
+        run: |
+          set -uo pipefail
+          echo "run started $(date -u +%FT%TZ)"
+          code=000
+          for i in 1 2 3; do
+            code=$(curl -sS -m 60 -o mpb.json -w '%{http_code}' -X POST -H "Authorization: Bearer $INGEST_TOKEN" "$FETCHER_URL/run" || echo 000)
+            echo "attempt $i: HTTP $code"; cat mpb.json 2>/dev/null; echo
+            [ "$code" = 200 ] && break
+            sleep $((i * 5))
+          done
+          if [ "$code" != 200 ]; then echo "::error::mpb-fetcher answered HTTP $code (non-2xx) after 3 attempts"; exit 1; fi
+          ships=$(jq -r '.ships // 0' mpb.json); ok=$(jq -r '.ok' mpb.json); applied=$(jq -r '.ingest.mpb // 0' mpb.json)
+          if [ "$ok" != "true" ] || [ "$ships" -lt 1000 ] || [ "$applied" -lt 1000 ]; then echo "::error::mpb-fetcher unhealthy: ok=$ok ships=$ships applied=$applied (expected ~7000)"; exit 1; fi
+          base="${WORKER_URL:-https://gods-eye-opensky-proxy.numenaslan.workers.dev}"; base="${base%/}"
+          age=$(curl -sS -m 30 -H 'Cache-Control: no-cache' "$base/api/ships?_=$(date +%s)" | jq -r '.mpbAgeSec // 99999')
+          echo "Worker mpbAgeSec=$age"
+          if [ "$age" -gt 300 ]; then echo "::error::Worker mpbAgeSec=$age (> 300 s) after ingest"; exit 1; fi
+          { echo "### MPB via placed Worker"; echo '```json'; jq -c . mpb.json; echo '```'; echo "Worker mpbAgeSec=$age"; } >> "$GITHUB_STEP_SUMMARY"
+      - name: CWA + aisstream (collect-once, MPB=0)
+        if: ${{ !cancelled() }}   # still run when the MPB step failed so CWA/aisstream stay fresh; the job is red either way
         env:
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
           CWA_API_KEY: ${{ secrets.CWA_API_KEY }}
           AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
           AIS_SEC: "60"
+          MPB: "0"   # MPB is fetched by the placed Worker above (mpbais.motcmpb.gov.tw times out from GitHub runners)
         run: node scripts/collect-once.mjs
