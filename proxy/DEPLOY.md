@@ -27,6 +27,9 @@ trims it to 19–28°N 116–126°E and the needed fields, and POSTs `{ships:[�
 The endpoint is undocumented and has no published licence — keep the polling rate low and attribute 交通部航港局.
 `AISSTREAM_API_KEY` is optional for the collector now (MPB / CWA-only mode); the ingest token is read from `INGEST_TOKEN` or `~/.config/gods-eye/ingest.token`.
 
+> **2026-11-03 update — MPB no longer needs a machine:** the `mpb-fetcher` Worker (`workers/mpb-fetcher/`, placed at `gcp:asia-east1`, service binding `PROXY` → this Worker, secret `INGEST_TOKEN`)
+> fetches MPB and posts to `/api/ships/ingest`; GitHub Actions (`.github/workflows/collector.yml`) triggers it every 5 min. See `workers/mpb-fetcher/README.md`. `scripts/ais-collector.mjs` is only a manual fallback.
+
 ## What you need to provide (2 things)
 
 | What | Where it comes from | Where it goes |

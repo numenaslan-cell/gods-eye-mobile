@@ -32,7 +32,7 @@ jobs:
           echo "run started $(date -u +%FT%TZ)"
           code=000
           for i in 1 2 3; do
-            code=$(curl -sS -m 60 -o mpb.json -w '%{http_code}' -X POST -H "Authorization: Bearer $INGEST_TOKEN" "$FETCHER_URL/run" || echo 000)
+            code=$(curl -sS -m 60 -o mpb.json -w '%{http_code}' -X POST -H "X-Trigger: gha-$GITHUB_EVENT_NAME" -H "Authorization: Bearer $INGEST_TOKEN" "$FETCHER_URL/run" || echo 000)
             echo "attempt $i: HTTP $code"; cat mpb.json 2>/dev/null; echo
             [ "$code" = 200 ] && break
             sleep $((i * 5))
