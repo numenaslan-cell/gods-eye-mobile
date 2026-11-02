@@ -29,7 +29,7 @@ async function post(path, body, timeout = 60000) {
   if (!r.ok) throw new Error(path + " ingest HTTP " + r.status + " " + JSON.stringify(j));
   return j;
 }
-async function withRetry(fn, tries = 3) { let last; for (let i = 0; i < tries; i++) { try { return await fn(); } catch (e) { last = e; log("retry", i + 1, "->", scrub(e.message)); await new Promise((r) => setTimeout(r, 3000 * (i + 1))); } } throw last; }
+async function withRetry(fn, tries = 3) { let last; for (let i = 0; i < tries; i++) { try { return await fn(); } catch (e) { last = e; log("retry", i + 1, "->", scrub(e.message), e.cause ? "| cause: " + scrub((e.cause.code || "") + " " + (e.cause.message || e.cause)) : ""); await new Promise((r) => setTimeout(r, 3000 * (i + 1))); } } throw last; }
 
 async function doMpb() {
   const ships = await withRetry(async () => {
