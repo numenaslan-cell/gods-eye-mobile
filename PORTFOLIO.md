@@ -1,6 +1,6 @@
 # God's Eye View // ORB-7 — 作品集案例介紹
 
-> **一句話介紹：** 手機優先的 3D 地球儀，把台灣周邊的真實航班、船舶（AIS）、地震／颱風／警特報、共機動態與約 15,900 顆真實衛星，用公開資料即時畫在手機上；前端是純靜態網頁，後端只有一支免費方案的 Cloudflare Worker。
+> **一句話介紹：** 手機優先的 3D 地球儀，把台灣周邊的真實航班、船舶（AIS）、地震／颱風／警特報、共機動態與約 15,900 顆真實衛星，用公開資料即時畫在手機上；放大時疊加 NASA GIBS 高解析圖磚、飛機與船隻以不同剪影分辨，並對疑似海警／共軍艦／共機加上「⚠️ 疑似」警示；前端是純靜態網頁，後端只有一支免費方案的 Cloudflare Worker。
 
 * 🔗 **線上 Demo：** <https://numenaslan-cell.github.io/gods-eye-mobile/>
 * 💻 **原始碼：** <https://github.com/numenaslan-cell/gods-eye-mobile>
@@ -13,15 +13,18 @@
 
 做法是把多個公開資料源整合成儀表板式的 three.js 3D 地球；資料抓不到時不會變成空白畫面，而是明確標示並改用示範資料或備援來源。
 
-> 介面風格是虛構的「諜報儀表板」，僅為展示用途；使用的皆為公開資料，不代表任何真實監控系統。船舶「疑似海警」標記是依 AIS 名稱／船型推測的啟發式結果，並非官方辨識；資料不得用於導航或安全相關用途。
+> 介面風格是虛構的「諜報儀表板」，僅為展示用途；使用的皆為公開資料，不代表任何真實監控系統。船舶「疑似海警／疑似共軍」與航空器「疑似共機」標記是依 AIS／ADS-B 欄位推測的啟發式結果，並非官方辨識（多數共機、共艦根本不發 ADS-B／AIS，官方數字以國防部每日公布為準）；資料不得用於導航或安全相關用途。
 
 ## 主要功能
 
 * 🌐 **手機優先的 3D 地球儀**（three.js）：日間 `DAY`／夜視 `NVG`／熱像 `THERM` 三種顯示模式，晝夜交界線依現在時間計算
+* 🔍 **放大不模糊（LOD）**：鏡頭拉近時在 4096 px 底圖上疊加 NASA GIBS WMTS 圖磚（日間 Blue Marble Shaded Relief＋Bathymetry、夜間 VIIRS City Lights 2012，z4–z7，最近約 490 m/px），最多 18 塊、LRU 快取並釋放貼圖；renderer 依 `devicePixelRatio`（上限 3，幀時間過長自動降階）、各向異性過濾與 mipmap
+* 🔺 **飛機／船隻剪影一眼分辨**：航空器＝機頭朝航向的飛機剪影，船舶＝船艏朝航向的船殼＋船艛（依類別上色），向量網格、固定螢幕像素大小、DPR 3 依然銳利，近距離隱藏靜止小漁船避免蓋住島嶼
+* ⚠️ **疑似警示標籤**：疑似海警（CCG）、疑似共軍艦（名稱含 海軍／PLA NAVY／PLAN＋艦號，或 MMSI 412/413 且船型 35；漁船不會只靠 MMSI 被標記）、疑似共機（ADS-B 軍用旗標＋中國 ICAO 位址區段／PLA 機型或呼號）皆有永遠顯示的標籤與脈動圈；標籤重疊時自動堆疊
 * ✈️ **台灣周邊即時航班**：由 Worker `/api/flights` 以 [adsb.lol](https://adsb.lol)（ODbL）為主，某個範圍失敗時改用 adsb.fi，最後才用 OpenSky；以 2 個 250 海浬圓涵蓋台灣、依 `hex` 去重、10 秒邊緣快取。每 15 秒更新，兩次更新之間依航向與速度平滑推算；Flight HUD 顯示呼號、高度、速度、航向、升降率，可跟隨單一航班
 * 🚢 **台灣周邊船舶（AIS）**：合併**交通部航港局（MPB）臺灣海域船舶即時資訊**與 aisstream.io，依 MMSI 合併；依貨輪／油輪／客輪／漁船／其他上色，**疑似中國海警（CCG）以紅色標示**並有專屬計數／切換鈕；CCG 判斷為名稱＋船型啟發式（名稱含 HAIJING／CHINA COAST GUARD／海警等一律算；僅靠 MMSI 前綴時排除漁船型別 30 與 HAIXUN 海事巡邏船）
 * 🌏 **地震／颱風／警特報**：USGS 近 30 天 M3.0+ 地震；Worker 取得**中央氣象署（CWA）**有感地震報告、目前活動的颱風與各縣市警特報並疊加顯示；CWA 沒有資料時自動退回 USGS
-* 🛡️ **PLA 分頁**：最新一天共機架次／逾越中線／共艦數與近 7 日趨勢（第三方整理自國防部日報，非官方），以及海巡署新聞 RSS 中提到「海警」的項目（30 分鐘快取）
+* 🛡️ **PLA 分頁**：最新一天共機架次／逾越中線／共艦數與近 7 日趨勢（第三方整理自國防部日報，非官方；頁面明確標示**國防部每日數字才是權威計數**，地圖上的疑似標記只是少數有發訊號者的子集），以及海巡署新聞 RSS 中提到「海警」的項目（30 分鐘快取）
 * 🛰️ **約 15,900 顆真實衛星**（CelesTrak TLE，實測 `active` 群組 15,899 顆）：用 satellite.js (SGP4) 在瀏覽器內每 5 秒推算位置；台灣上空衛星清單與 ISS 一鍵追蹤
 * 🔭 **過境預測**：依定位（預設台北）預測未來 72 小時 ISS、天宮與數顆亮星的過境（起／峰／止、最高仰角、是否可能看得到），並有「LOOK HERE」方位指引
 * 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震、AIS 出現疑似海警船、ISS 過境前約 5 分鐘；每種可分別開關
@@ -36,6 +39,7 @@
 * Web Push：以 WebCrypto 手寫 RFC 8291（aes128gcm）加密與 RFC 8292 VAPID（ES256）簽章，單元測試含 RFC 測試向量
 * 資料收集器：Node.js 腳本（跑在一般網路 IP 的機器上），低頻率抓取 aisstream、航港局 MPB 與 CWA，再 POST 到 Worker
 * 資料來源：adsb.lol、adsb.fi、OpenSky Network、aisstream.io、交通部航港局 MPB、中央氣象署開放資料、USGS、pla-tracker（第三方整理國防部日報）、海巡署 RSS、CelesTrak
+* 影像：NASA GIBS WMTS（EPSG:4326）動態圖磚，自製 shader 與底圖共用晝夜／NVG／THERM 著色；標記為向量三角形網格與 HTML 警示疊層
 * 測試與部署：Worker 邏輯 20 個單元測試（Node）；本機 workerd 端對端測試；headless Chrome 在 390×844 截圖驗證；GitHub Pages 靜態部署；貼圖為 NASA Blue Marble／Black Marble
 
 ## 解決的技術難題
@@ -47,7 +51,9 @@
 5. **跨來源合併**：航港局與 aisstream 的船以 MMSI 合併——位置以較新者為準，名稱／船型／IMO 由任一方補齊，並標示資料來源（`ais`／`mpb`／`both`）；航港局時間為台北時間（UTC+8）需正確換算。
 6. **Web Push 在免費方案上的做法**：訂閱存在 KV，Cron 每 2 分鐘喚醒 Durable Object 檢查地震、海警船與 ISS 過境，去重狀態存在 DO storage；推播內容用 WebCrypto 手刻加密與 VAPID 簽章（不依賴 Node 套件），只允許已知推播服務網域，過期的訂閱（404／410）自動清除。
 7. **資料真實性與授權**：實測發現航港局端點未公開文件、adsb.fi 與海巡署 RSS 限非商業使用、aisstream 無公開條款，因此在介面與 `docs/DATA-SOURCES.md` 逐一標示出處與限制；CWA 金鑰只存在 Worker secret／收集器環境變數，不進 repo 與前端。
-8. **TLE 快取與手機版面**：約 2.7 MB 的 `active` TLE 快取在 localStorage 2 小時（失敗時退回舊快取或 `stations`）；375–430 px 直式不橫向捲動、按鈕 ≥ 44 px、HUD 面板一次只展開一個，並處理 safe-area。
+8. **放大後解析度與手機效能（LOD）**：全球底圖只有 4096×2048，拉近就糊。做法是依相機距離與視野計算需要的 GIBS 圖磚層級與格子（上限 18 塊、同時 6 個請求、40 張貼圖 LRU，淘汰時 `dispose()`），每塊是貼在球面上的小曲面片，與底圖共用同一段 shader（晝夜交界、NVG、THERM）；白天只抓日圖、夜晚只抓夜燈圖；失敗的單塊退回底圖。renderer 使用 DPR 上限 3 並在幀時間過長時自動降到 2→1.5。
+9. **標記辨識度與疑似警示**：舊標記是小圓錐／三角形，放大後蓋住島嶼。改成以固定螢幕像素繪製的向量剪影（飛機 vs 船殼），近距離隱藏靜止小船；疑似海警／共軍艦／共機用 HTML 疊層標籤（含脈動圈、重疊時自動堆疊）。啟發式刻意保守：中國 ICAO 位址單獨不標記（民航客機也在其中）、漁船不因 MMSI 被標記、拼音 `HAI JUN` 是常見民間人名因此需搭配船型 35；實測第一版曾誤標 3 艘民用船，已依實際資料修正。這些只是提示，不是辨識。
+10. **TLE 快取與手機版面**：約 2.7 MB 的 `active` TLE 快取在 localStorage 2 小時（失敗時退回舊快取或 `stations`）；375–430 px 直式不橫向捲動、按鈕 ≥ 44 px、HUD 面板一次只展開一個，並處理 safe-area。
 
 ## 我可以幫你做什麼
 
@@ -62,7 +68,7 @@ GitHub：[numenaslan-cell](https://github.com/numenaslan-cell)
 
 # English Version
 
-**God's Eye View // ORB-7** — a mobile-first 3D globe that renders real flights, ships (AIS), earthquakes / typhoons / warnings, PLA daily activity and ~15,900 real satellites around Taiwan from open data. The front end is a static page; the only backend is one free-plan Cloudflare Worker.
+**God's Eye View // ORB-7** — a mobile-first 3D globe that renders real flights, ships (AIS), earthquakes / typhoons / warnings, PLA daily activity and ~15,900 real satellites around Taiwan from open data, with NASA GIBS high-resolution tiles when you zoom in, shape-distinct aircraft / ship icons, and "⚠️ 疑似" (suspected) warning labels for CCG / PLA Navy ships and PLA aircraft. The front end is a static page; the only backend is one free-plan Cloudflare Worker.
 
 * **Live demo:** <https://numenaslan-cell.github.io/gods-eye-mobile/>
 * **Source:** <https://github.com/numenaslan-cell/gods-eye-mobile>
@@ -76,8 +82,11 @@ Public flight, ship, weather and satellite data is abundant but raw (JSON / CSV 
 * Mobile-first three.js globe with **DAY / NVG / THERM** modes and a computed day–night terminator
 * **Flights** via the Worker's `/api/flights`: [adsb.lol](https://adsb.lol) (ODbL) first, adsb.fi when a circle fails, OpenSky as last resort; two 250 nm circles cover Taiwan, deduped by `hex`, 10 s edge cache; 15 s client refresh with dead reckoning; flight HUD with follow mode
 * **Ships (AIS):** Taiwan Maritime Port Bureau (MPB, 交通部航港局) feed merged with aisstream.io by MMSI; colour by ship class, **suspected China Coast Guard vessels highlighted in red** with their own counter / cycle button (heuristic: name matches such as HAIJING / CHINA COAST GUARD / 海警 always count; MMSI-prefix-only matches exclude fishing type 30 and HAIXUN maritime-safety patrol ships)
+* **Zoom LOD:** on zoom, NASA GIBS WMTS tiles (Blue Marble Shaded Relief + Bathymetry by day, VIIRS City Lights 2012 by night, z4–z7, ~490 m/px at best) are overlaid on the 4096 px base texture — max 18 tiles, LRU texture cache with `dispose()`, device-pixel-ratio capped at 3 with adaptive step-down, anisotropic filtering and mipmaps
+* **Shape-distinct icons:** aircraft = plane silhouette pointing along heading; ships = hull + deckhouse pointing along course, coloured by class; vector meshes at constant on-screen size (sharp at DPR 3), stationary small boats hidden when zoomed in so the island stays visible
+* **Suspect warning labels (heuristics, not identifications):** always-visible "⚠️ 疑似海警" (CCG ships), "⚠️ 疑似共軍" (PLA Navy: names with 海軍 / PLA NAVY / PLAN + hull number, or MMSI 412/413 with AIS type 35; fishing boats never match on MMSI alone) and "⚠️ 疑似共機" (PLA aircraft: adsb.lol/adsb.fi military flag + Chinese ICAO block / PLA type or callsign) with pulsing rings; labels stack when they overlap
 * **Earthquakes / typhoon / warnings:** USGS 30-day M3.0+ quakes, overlaid with Central Weather Administration (CWA) felt-quake reports, active typhoons and county warnings; falls back to USGS when no CWA data is available
-* **PLA tab:** latest-day PLA aircraft / median-line crossings / ships plus a 7-day trend (third-party compilation of Taiwan MND daily reports — unofficial), and Taiwan Coast Guard Administration (CGA) news items that mention 海警 (30 min cache)
+* **PLA tab:** latest-day PLA aircraft / median-line crossings / ships plus a 7-day trend (third-party compilation of Taiwan MND daily reports — unofficial; the tab states that the MND daily count is the authoritative number, because most PLA aircraft and ships don't broadcast ADS-B / AIS), and Taiwan Coast Guard Administration (CGA) news items that mention 海警 (30 min cache)
 * **~15,900 real satellites** from CelesTrak TLEs (15,899 in `active` when tested), SGP4 in the browser every 5 s; satellites over Taiwan, one-tap ISS tracking
 * **Pass predictions:** next 72 h of ISS / Tiangong / bright satellites for the user's location, with visibility and a "LOOK HERE" compass
 * **Web Push alerts** (work with the page closed): M4.5+ quakes near Taiwan, suspected CCG vessel in AIS, ISS pass ~5 min ahead; each toggled separately
@@ -89,6 +98,7 @@ Public flight, ship, weather and satellite data is abundant but raw (JSON / CSV 
 * Web Push: hand-written RFC 8291 (aes128gcm) encryption and RFC 8292 VAPID (ES256) on WebCrypto, unit-tested with the RFC test vector
 * Data collector: a Node.js script on a normal-IP machine that polls aisstream, the MPB feed and CWA at low frequency and posts to the Worker
 * Data: adsb.lol, adsb.fi, OpenSky, aisstream.io, MPB, CWA open data, USGS, pla-tracker (third party), CGA RSS, CelesTrak
+* Imagery: NASA GIBS WMTS (EPSG:4326) tiles sharing the base globe's day/night/NVG/THERM shader; vector-mesh markers and an HTML warning overlay
 * Testing / deploy: 20 Node unit tests for the Worker logic, local workerd end-to-end runs, headless-Chrome screenshots at 390×844, GitHub Pages; NASA Blue/Black Marble textures
 
 ### Technical challenges solved
@@ -99,7 +109,9 @@ Public flight, ship, weather and satellite data is abundant but raw (JSON / CSV 
 5. **Cross-source merge** — MPB and aisstream ships are merged by MMSI: the fresher position wins, name / type / IMO are filled from either, and the origin (`ais` / `mpb` / `both`) is kept; MPB timestamps are Taipei time (UTC+8) and converted accordingly.
 6. **Web Push on the free plan** — subscriptions in KV; a cron wakes the Durable Object every 2 min to check quakes, CCG vessels and ISS passes, with dedupe state in DO storage; payloads use hand-rolled WebCrypto encryption and VAPID signing, only allow-listed push hosts are accepted, and expired subscriptions (404 / 410) are removed.
 7. **Data honesty and licensing** — the MPB endpoint is undocumented, adsb.fi and the CGA RSS are non-commercial, aisstream publishes no terms; each is credited in the UI and in `docs/DATA-SOURCES.md`. The CWA key lives only in a Worker secret / the collector's environment, never in the repo or the front end.
-8. **TLE caching and mobile layout** — the ~2.7 MB `active` TLE set is cached in localStorage for 2 h (fallback: stale cache, then `stations`); 375–430 px portrait without horizontal scroll, ≥ 44 px touch targets, one HUD panel open at a time, safe-area handling.
+8. **Zoom resolution on mobile (LOD)** — the whole-globe base map is only 4096×2048 and blurs when zoomed. The app computes the GIBS tile level and grid from camera distance and FOV (≤ 18 tiles, 6 concurrent requests, 40-texture LRU with `dispose()`), draws each tile as a small sphere patch sharing the base shader (terminator, NVG, THERM), fetches only day tiles by day and night-lights tiles by night, and falls back per tile to the base map on failure. The renderer uses DPR up to 3 and steps down to 2 → 1.5 if frames get slow.
+9. **Marker legibility and suspect labels** — the old cone / triangle markers covered the island when zoomed in. They are now vector silhouettes at constant pixel size (plane vs hull), with stationary small boats hidden up close; suspected CCG / PLA Navy / PLA aircraft get HTML overlay labels with pulsing rings that stack when they overlap. The heuristics are deliberately conservative: a Chinese ICAO address alone never flags (airliners live there), fishing boats never match on MMSI alone, and pinyin `HAI JUN` is a common civilian name so it needs AIS type 35 — the first version flagged 3 civilian ships in live data and was tightened. They are hints, not identifications.
+10. **TLE caching and mobile layout** — the ~2.7 MB `active` TLE set is cached in localStorage for 2 h (fallback: stale cache, then `stations`); 375–430 px portrait without horizontal scroll, ≥ 44 px touch targets, one HUD panel open at a time, safe-area handling.
 
 ### What I can build for you
 * Custom **real-time dashboards** on top of your APIs or open data
@@ -113,4 +125,4 @@ GitHub: [numenaslan-cell](https://github.com/numenaslan-cell)
 
 # 短版自我介紹（104／Tasker／LinkedIn）
 
-資料視覺化接案｜自製手機優先 3D 地球儀，整合台灣周邊航班、船舶 AIS、地震／颱風警特報、共機動態與約 1.59 萬顆真實衛星，附 Web Push 提醒；前端靜態、後端為免費方案 Cloudflare Worker，可安裝成 PWA。可承接即時資料儀表板、地圖／3D 視覺化、邊緣代理與行動網頁 App。Demo：numenaslan-cell.github.io/gods-eye-mobile
+資料視覺化接案｜自製手機優先 3D 地球儀，整合台灣周邊航班、船舶 AIS、地震／颱風警特報、共機動態與約 1.59 萬顆真實衛星，放大時自動載入 NASA 高解析圖磚、飛機／船隻剪影一眼分辨、疑似海警／共軍標示（啟發式，非官方辨識），附 Web Push 提醒；前端靜態、後端為免費方案 Cloudflare Worker，可安裝成 PWA。可承接即時資料儀表板、地圖／3D 視覺化、邊緣代理與行動網頁 App。Demo：numenaslan-cell.github.io/gods-eye-mobile

@@ -1,7 +1,7 @@
 {
   "name": "God's Eye View // ORB-7",
   "short_name": "God's Eye",
-  "description": "Open-data satellite & flight tracking globe demo (OpenSky + CelesTrak).",
+  "description": "Mobile-first 3D globe of Taiwan from open data: flights, ships (AIS), quakes, PLA daily stats, satellites; NASA GIBS zoom tiles, suspected CCG / PLA warning labels (heuristic).",
   "lang": "zh-TW",
   "start_url": "./index.html",
   "scope": "./",
