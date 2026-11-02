@@ -222,7 +222,8 @@ console.log(n + " tests passed");
 
 // ---- PLAN (suspected PLA Navy) heuristic ----
 {
-  assert.ok(isPlan({ name: "PLAN 989", mmsi: "1" })); assert.ok(isPlan({ name: "HAIJUN 12", mmsi: "1" })); assert.ok(isPlan({ name: "中國海軍 17", mmsi: "1" }));
+  assert.ok(isPlan({ name: "PLAN 989", mmsi: "1" })); assert.ok(isPlan({ name: "HAIJUN 12", mmsi: "412000001", type: 35 })); assert.ok(isPlan({ name: "HAIJUN 12", mmsi: "412000001" }));
+  assert.ok(!isPlan({ name: "LING HAI JUN 8006", mmsi: "413544450", type: 33 }), "civil dredger"); assert.ok(!isPlan({ name: "HAIJUN11", mmsi: "412756420", type: 99 })); assert.ok(!isPlan({ name: "HAIJUN 12", mmsi: "1" })); assert.ok(isPlan({ name: "中國海軍 17", mmsi: "1" }));
   assert.ok(isPlan({ name: "PLA NAVY", mmsi: "1" })); assert.ok(isPlan({ name: "x", type: 35, mmsi: "412123456" })); assert.ok(isPlan({ name: "x", type: 35, mmsi: "413123456" }));
   assert.ok(!isPlan({ name: "PLAN B", type: 37, mmsi: "319000000" }), "bare PLAN word (yacht) does not count");
   assert.ok(!isPlan({ name: "x", type: 35, mmsi: "366000000" }), "type 35 under a foreign MMSI is not PLAN");

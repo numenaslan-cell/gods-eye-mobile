@@ -125,13 +125,15 @@ export function isCcg(s) {
 }
 
 /** Suspected PLA Navy vessel (heuristic, label for humans — "疑似共軍"). Matches:
- *  - names: HAIJUN / HAI JUN, 海軍 / 海军, 解放軍, "PLA NAVY", or "PLAN" followed by a hull number (e.g. "PLAN 989") — a bare word "PLAN" (yachts, "PLAN B") does not count;
+ *  - names: 海軍 / 海军, 解放軍, "PLA NAVY", or "PLAN" followed by a hull number (e.g. "PLAN 989") — a bare word "PLAN" (yachts, "PLAN B") does not count; HAIJUN only together with type 35 (or unknown type + MMSI 412/413) because it is also a civilian given name;
  *  - MMSI prefix 412/413 together with AIS ship type 35 (military operations).
  *  Never a fishing-only match (type 30 is excluded from the MMSI path), and anything already flagged as China Coast Guard is not also PLAN. */
 export function isPlan(s) {
   if (isCcg(s)) return false;
   const raw = s.name || "", name = raw.toUpperCase();
-  if (/(^|[^A-Z])(HAI ?JUN|PLA ?NAVY|PLAN[ -]?\d{2,4})([^A-Z]|$)/.test(name)) return true;
+  if (/(^|[^A-Z])(PLA ?NAVY|PLAN[ -]?\d{2,4})([^A-Z]|$)/.test(name)) return true;
+  // pinyin "HAI JUN" is also a common civilian given name (dredgers, cargo, fishing: e.g. "LING HAI JUN 8006", "HAIJUN11") -> only with a military-ish signal
+  if (/(^|[^A-Z])HAI ?JUN([^A-Z]|$)/.test(name)) return s.type === 35 || (!s.type && /^41[23]/.test(s.mmsi || ""));
   if (/海軍|海军|解放軍|解放军/.test(raw)) return true;
   if (s.type === 30) return false;
   return s.type === 35 && /^41[23]/.test(s.mmsi || "");

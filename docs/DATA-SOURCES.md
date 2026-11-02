@@ -40,6 +40,12 @@
 * CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內處理（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
 * 驗證狀況（2026-11-01）：四個資料集都用使用者自己的 key 對真實 API 測試過；解析以**真實回應樣本**（`proxy/test/fixtures/`，已縮減）做單元測試。注意：颱風資料集的實際 JSON 欄位是 PascalCase（`TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[]`、`CoordinateLongitude/Latitude`），警特報的 `validTime` 沒有時區（視為台北時間 +08:00）；解析器兩種大小寫都接受。
 
+## 標記圖示與「疑似」警示標籤 / Marker shapes & suspect labels
+
+* 航空器＝飛機剪影（機頭指向航向）；船舶＝尖艏船殼＋船艛剪影（艏指向航向 COG），依類別上色。兩者都是向量三角形網格（非點精靈），在 DPR 3 下邊緣銳利，並以螢幕固定像素大小繪製（放大時相對縮小）；近距離（< 1.4 個地球半徑）會隱藏靜止的漁船／未分類小船以免蓋住島嶼。
+* **⚠️ 疑似海警**（CCG，紅）、**⚠️ 疑似共軍**（PLAN，洋紅紅）、**⚠️ 疑似共機**（PLA 航空器，紅）：永遠顯示的標籤＋脈動圈（HTML 疊層，標籤重疊時往上堆疊）。這些都是啟發式，不是官方辨識。
+* **疑似共軍艦（`isPlan`，`proxy/src/ais.mjs`）**：名稱含「海軍／海军／解放軍」、`PLA NAVY`、`PLAN <艦號>`（單獨的 “PLAN” 不算，避免遊艇 “PLAN B”），或 MMSI 412/413 開頭且 AIS 船型 35（軍事）；拼音 `HAI JUN` 也是常見民間人名（疏浚船、貨船、漁船），因此只在船型 35（或船型未知且 MMSI 412/413）時才算。**漁船（type 30）永遠不會只靠 MMSI 被標記**；已判為 CCG 的不會重複判為 PLAN。多數共艦不發 AIS，官方數字以國防部日報為準。
+
 ## 地球影像 LOD（放大時的高解析圖磚）/ Globe imagery level-of-detail
 
 整顆地球的底圖仍是內嵌的 NASA Blue Marble（日 4096×2048）／Black Marble（夜 2048×1024）。鏡頭拉近（距離 ≲ 2.1 個地球半徑）時，App 會在可視範圍上疊加 **NASA GIBS WMTS** 圖磚（EPSG:4326、`500m` tile matrix set、512 px、z4–z7，即每塊 18°–2.25°；z7 約 0.0044°/px ≈ 490 m）：
