@@ -9,15 +9,13 @@
  * Routes
  *   GET  /health  -> {ok:true}                      (no auth, touches nothing)
  *   GET  /log     -> last 40 runs (trigger, start time, ships, ok/error) from KV; Bearer INGEST_TOKEN
- *   POST /run     -> fetch MPB, trim, POST to the main Worker /api/ships/ingest through the PROXY service binding.
+ *   POST /run     -> fetch MPB and STREAM the raw GeoJSON (unparsed) to the main Worker /api/ships/ingest-mpb through the PROXY service binding; the Durable Object parses it (no CPU in this Worker).
  *                    Bearer INGEST_TOKEN required. 200 only when MPB gave > 0 ships AND the ingest answered 2xx; otherwise 502.
  * scheduled (Cloudflare cron) -> calls its own POST /run through the SELF service binding, because placement only applies to fetch handlers.
  * Bindings: service PROXY -> gods-eye-opensky-proxy, service SELF -> mpb-fetcher, KV LOG, secret INGEST_TOKEN.
  */
-import { normalizeMpb } from "../../../proxy/src/ais.mjs";
 
 const MPB_URL = "https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx";
-const BOX = { lamin: 19, lomin: 116, lamax: 28, lomax: 126 };
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 
 async function tokenOk(given, want) {
@@ -26,15 +24,15 @@ async function tokenOk(given, want) {
   const x = new Uint8Array(a), y = new Uint8Array(b); let d = 0; for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i]; return d === 0;
 }
 
-async function fetchMpb(tries = 3) {
+/** MPB response, NOT parsed here: a free-plan Worker has 10 ms of CPU and JSON.parse of the 3 MB GeoJSON blows it (outcome exceededCpu, 2026-11-03 05:26Z onwards).
+ *  The body is streamed to the main Worker, whose Durable Object parses/normalises it. This Worker only exists for its Taiwan placement. */
+async function fetchMpbResponse(tries = 3) {
   let last = "";
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await fetch(MPB_URL, { headers: { Referer: "https://mpbais.motcmpb.gov.tw/aismpb/", "User-Agent": "gods-eye-view/1.0 (+https://numenaslan-cell.github.io/gods-eye-mobile/)", Accept: "application/json" }, signal: AbortSignal.timeout(12000) });
-      if (!r.ok) throw new Error("MPB HTTP " + r.status);
-      const gj = await r.json(); const feats = Array.isArray(gj.features) ? gj.features : [];
-      if (!feats.length) throw new Error("MPB returned no features (Referer rejected / IP blocked?)");
-      return feats;
+      const r = await fetch(MPB_URL, { headers: { Referer: "https://mpbais.motcmpb.gov.tw/aismpb/", "User-Agent": "gods-eye-view/1.0 (+https://numenaslan-cell.github.io/gods-eye-mobile/)", Accept: "application/json" }, signal: AbortSignal.timeout(20000), cf: { cacheTtl: 0 } });
+      if (!r.ok) { await r.body?.cancel(); throw new Error("MPB HTTP " + r.status); }
+      return r;
     } catch (e) { last = String((e && e.message) || e); }
   }
   throw new Error(last);
@@ -49,20 +47,13 @@ async function runOnce(env, trigger, placement) {
   const startedAt = new Date().toISOString(), t0 = Date.now(), out = { ok: false, trigger, startedAt, placement };
   let status = 200;
   try {
-    const feats = await fetchMpb(); out.mpbMs = Date.now() - t0; out.features = feats.length;
-    const by = new Map();
-    for (const f of feats) { const x = normalizeMpb(f, BOX); if (x && (!by.has(x.mmsi) || by.get(x.mmsi).t < x.t)) by.set(x.mmsi, x); }
-    const ships = [...by.values()]; out.ships = ships.length;
-    if (!ships.length) { out.error = "MPB: 0 ships in Taiwan box"; status = 502; }
-    else {
-      let newest = 0, oldest = Infinity; for (const s of ships) { if (s.t > newest) newest = s.t; if (s.t < oldest) oldest = s.t; }
-      out.newestRecord = new Date(newest).toISOString(); out.oldestRecord = new Date(oldest).toISOString();
-      const t1 = Date.now();
-      const r = await env.PROXY.fetch("https://proxy/api/ships/ingest", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.INGEST_TOKEN }, body: JSON.stringify({ ships }) });
-      out.ingestMs = Date.now() - t1; out.ingestStatus = r.status;
-      const text = await r.text(); try { out.ingest = JSON.parse(text); } catch { out.ingest = text.slice(0, 200); }
-      if (!r.ok) { out.error = "ingest HTTP " + r.status; status = 502; } else out.ok = true;
-    }
+    const mpb = await fetchMpbResponse(); out.mpbMs = Date.now() - t0;
+    const t1 = Date.now();
+    const r = await env.PROXY.fetch("https://proxy/api/ships/ingest-mpb", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.INGEST_TOKEN }, body: mpb.body });
+    out.ingestMs = Date.now() - t1; out.ingestStatus = r.status;
+    const text = await r.text(); let j; try { j = JSON.parse(text); } catch { j = null; out.ingest = text.slice(0, 200); }
+    if (j) { out.ingest = j; out.features = j.features; out.ships = j.ships; out.newestRecord = j.newestRecord; out.oldestRecord = j.oldestRecord; }
+    if (!r.ok) { out.error = (j && j.error) || "ingest HTTP " + r.status; status = 502; } else out.ok = true;
   } catch (e) { out.error = String((e && e.message) || e).slice(0, 300); status = 502; }
   out.totalMs = Date.now() - t0;
   await record(env, { trigger, startedAt, ok: out.ok, ships: out.ships || 0, ingested: out.ingest && out.ingest.mpb, newestRecord: out.newestRecord || null, ms: out.totalMs, error: out.error || null });

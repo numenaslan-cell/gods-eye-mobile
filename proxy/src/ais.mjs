@@ -94,6 +94,14 @@ export function normalizeMpb(f, box = MPB_BBOX) {
   if (/^\d{7}$/.test(imo) && imo !== "0000000") r.imo = imo;
   return r;
 }
+/** Whole MPB GeoJSON FeatureCollection -> {features, ships[] (one per MMSI, newest record, inside `box`), newest, oldest}. Heavy (3 MB JSON): run it in the Durable Object, never in a 10 ms-CPU Worker. */
+export function normalizeMpbCollection(gj, box = { lamin: 19, lomin: 116, lamax: 28, lomax: 126 }) {
+  const feats = gj && Array.isArray(gj.features) ? gj.features : [], by = new Map();
+  for (const f of feats) { const x = normalizeMpb(f, box); if (x) { const o = by.get(x.mmsi); if (!o || o.t < x.t) by.set(x.mmsi, x); } }
+  const ships = [...by.values()]; let newest = 0, oldest = Infinity;
+  for (const x of ships) { if (x.t > newest) newest = x.t; if (x.t < oldest) oldest = x.t; }
+  return { features: feats.length, ships, newest: ships.length ? newest : null, oldest: ships.length ? oldest : null };
+}
 /** Merge one normalised MPB record into the per-MMSI map. aisstream data newer than the MPB record wins for position; static fields are filled from either. */
 export function applyMpb(map, r, now) {
   if (!r || !/^\d{9}$/.test(String(r.mmsi))) return false;

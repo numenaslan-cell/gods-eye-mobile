@@ -5035,6 +5035,7 @@ void main() {
 
     function shipsBody() {
       var bits = [];
+      if (ships.unavailable) bits.push(h("p", { key: "un", className: "ge-note ge-warn" }, "⚠ 船舶資料暫時無法使用（" + (ships.unavailable === "stale" ? "MPB 約 " + ships.unavailableAge + " 分鐘未更新" : ships.unavailable === "empty" ? "目前沒有船位" : "連線失敗") + "）· Ship data temporarily unavailable — retrying automatically."));
       if (ships.status === "demo") bits.push(h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — no live AIS (" + (ships.error || "?") + "). Demo ships follow real shipping lanes; retrying…"));
       if (ships.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, ships.note || "Contacting AIS relay…"));
       bits.push(h("div", { key: "cnt", className: "ge-iss" },
@@ -5279,6 +5280,8 @@ void main() {
       h("div", { className: "ge-reticle ge-reticle-ship", ref: reticle2Ref }, h("i", null), h("i", null), h("i", null), h("i", null)),
 
       h("div", { className: "ge-ui" },
+        ships.unavailable && h("div", { className: "ge-shipnotice", role: "status" }, h("b", null, "⚠ 船舶資料暫時無法使用 · SHIP DATA TEMPORARILY UNAVAILABLE"),
+          h("small", null, ships.unavailable === "stale" ? "航港局（MPB）資料已約 " + ships.unavailableAge + " 分鐘未更新，圖上船隻可能不是最新。系統會自動重試。" : ships.unavailable === "empty" ? "目前沒有收到任何船位，並非海上沒有船。系統會自動重試。" : "無法連到船位服務，系統會自動重試。")),
         h("header", { className: "ge-top" },
           h("div", { className: "ge-tag" },
             h("b", { className: "ge-lime" }, "OPEN DATA"), h("span", { className: "ge-dim" }, "//"),

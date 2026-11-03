@@ -117,3 +117,11 @@ In the app: Alerts tab → enable → "Send test push". On iOS 16.4+ you must fi
 Tested end-to-end only in local workerd against mocked aisstream / USGS / CelesTrak / push endpoints (the sandbox can't reach `*.workers.dev`,
 and I have no aisstream key). Not yet tested against real aisstream data (vessel coverage near Taiwan, real CCG names/MMSI),
 real FCM / Mozilla / Apple push services, or a real iPhone.
+
+
+## Deploying the proxy without breaking anything (read before every deploy)
+* `PUT …/workers/scripts/gods-eye-opensky-proxy` **replaces the whole binding list**. Always upload with the complete list in `proxy/deploy-metadata.json` (HUB, SUBS, VAPID_*, service INTEL → pla-intel, service FETCHER → mpb-fetcher) plus `keep_bindings: ["secret_text"]`
+  (keeps AISSTREAM_API_KEY, CWA_API_KEY, INGEST_TOKEN, VAPID_PRIVATE_KEY). `node scripts/deploy-proxy-cf.mjs > deploy.js` builds the Cloudflare-MCP `execute` body from that file and checks that no binding is missing afterwards.
+* `mpb-fetcher` refers to the proxy by name (service binding PROXY) so a proxy deploy cannot remove it, but deploy the proxy **first** when a change adds a route the fetcher calls (the first cron run after a deploy can still hit the old version → one 404, next run fine).
+* `GET /api/health` → 200/503 with `ships.count`, `ships.mpbAgeSec`, `ships.mpbStale` (> 15 min), `missingBindings`, `selfHeal`. The collector workflow's last step fails the run on 0 ships, MPB > 15 min or a missing binding.
+* Ship data path: placed `mpb-fetcher` (cron */5) → `POST /api/ships/ingest-mpb` (raw GeoJSON, parsed in the Hub DO). The proxy cron (*/2) runs the watchdog: `mpbAgeSec > 420` → `FETCHER /run` (`X-Trigger: proxy-watchdog`).

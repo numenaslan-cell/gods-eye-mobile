@@ -132,3 +132,9 @@
 * Secrets（Repo → Settings → Secrets）：`INGEST_TOKEN`（同時是 `mpb-fetcher` 的 Bearer 與其 Worker secret）、`CWA_API_KEY`、`AISSTREAM_API_KEY`、`WORKER_URL`。需要 Node ≥ 22，所以 workflow 用 Node 22。
 * **限制：** GitHub 的排程是 best-effort，實際間隔常是 5–15 分鐘、尖峰時可能略過；排程只在預設分支執行；公開 repo 若 60 天無 commit 排程會被自動停用。最新資料時間：`/api/ships` → `updated`／`ageSec`／`mpbAgeSec`，`/api/quakes` → `time`。主 Worker 最多追蹤 4,000 艘（`trimShips`），`/api/ships` 最多回傳 2,500 艘，所以 `mpb-fetcher` 回報的 `ships`（約 7,000）會多於 `count`。
 * **風險：** MPB 端點未公開、有地理封鎖，可能日後也擋 Cloudflare 位址，或 placement 對應的資料中心改變；屆時 workflow 會紅燈。備援：台灣／住宅 IP 上的 `scripts/ais-collector.mjs`，或 AWS Lambda（ap-east-2 台北）／GCP Cloud Run（asia-east1）同樣邏輯。
+
+### 事故紀錄與監控：船舶資料中斷（2026-11-03 13:26–14:20 台北時間）
+* **根因：** `mpb-fetcher` 在免費方案只有 10 ms CPU，解析 ~3 MB 的 MPB GeoJSON（約 8,000 筆）超過上限，從 05:26 UTC 起每次 `/run` 都以 `exceededCpu`（HTTP 503、空內容）結束；因為 Worker 在寫 KV 執行紀錄前就被中止，紀錄也停在 05:25。30 分鐘沒有新資料後，主 Worker 依 `KEEP_MS`＝30 分鐘把所有船隻視為過期，所以 `/api/ships` 變成 0（資料並非被部署清除；與 quake 部署無關，部署時間在其後）。
+* **修正：** `mpb-fetcher` 不再解析，只把 MPB 回應串流到 `POST /api/ships/ingest-mpb`，由 Hub Durable Object（30 秒 CPU）解析、裁切、去重。
+* **監控：** 代理 Worker 的 `*/2` cron 檢查 `mpbAgeSec`：超過 7 分鐘（錯過一個 5 分鐘週期）就透過 service binding `FETCHER` 自行呼叫 `mpb-fetcher /run`；超過 15 分鐘標記 `mpbStale`，`GET /api/health` 回 503（也回報遺失的 binding），`/api/ships` 帶 `mpbStale`；GitHub 收集器最後一步 `Health gate` 在 0 艘船、MPB 過舊或 binding 遺失時讓整個 run 變紅；前端在這些情況顯示「船舶資料暫時無法使用」提示而不是空地圖。
+* **部署不再弄丟 binding：** `proxy/deploy-metadata.json` 是完整 binding 清單，`scripts/deploy-proxy-cf.mjs` 由它產生部署內容並檢查有無遺失（見 `proxy/DEPLOY.md`）。

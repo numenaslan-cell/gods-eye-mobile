@@ -35,7 +35,7 @@
   var listeners = [];
   var state = {
     flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "adsb.lol", nextTry: 0 },
-    ships: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
+    ships: { unavailable: "", unavailableAge: 0, status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
     quakes: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "USGS", sources: null, liveUpdated: 0, nextTry: 0 },
     // Taiwan CWA (交通部中央氣象署) extras: only populated when the Worker has the owner's CWA_API_KEY secret (GET /quakes says enabled:true); otherwise USGS only
     // PLA daily activity (third-party CSV built from Taiwan MND daily reports) and CGA (海巡署) RSS items about the China Coast Guard (海警)
@@ -239,6 +239,7 @@
   }
   function shipsToDemo(msg, wait) {
     shipFailures++;
+    state.ships.unavailable = "offline"; state.ships.unavailableAge = 0;
     if (cfg.demoFallback) setShips("demo", state.ships.status === "demo" && state.ships.list.length ? state.ships.list : demoShips(), msg);
     else setShips("demo", [], msg);
     scheduleShips(wait || Math.min(60000 * Math.pow(2, shipFailures - 1), 600000));
@@ -254,6 +255,9 @@
       shipFailures = 0;
       if (j.warming) { setShips("loading", [], "", "AIS relay warming up…"); scheduleShips(20000); return; }
       var list = parseShips(j);
+      // clear "ship data temporarily unavailable" signal for the UI: nothing to draw, or the MPB (Taiwan AIS) feed behind it has stopped (> 15 min)
+      state.ships.unavailableAge = j.mpbAgeSec != null ? Math.round(j.mpbAgeSec / 60) : 0;
+      state.ships.unavailable = !list.length ? "empty" : (j.mpbStale || (j.mpbAgeSec != null && j.mpbAgeSec > 900)) ? "stale" : "";
       setShips("live", list, "", j.error ? "stale: " + j.error : (j.total > list.length ? "TOP " + list.length + " OF " + j.total : (j.ageSec != null ? "feed " + j.ageSec + "s old" : "")));
       scheduleShips(cfg.shipRefreshMs);
     }).catch(function (err) {

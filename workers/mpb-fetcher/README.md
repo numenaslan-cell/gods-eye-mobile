@@ -7,8 +7,9 @@ A Cloudflare Worker with **`placement.region = "gcp:asia-east1"`** (Changhua, Ta
 
 ```
 GitHub Actions cron (*/5)  ──POST /run (Bearer INGEST_TOKEN)──▶  mpb-fetcher  (placed, gcp:asia-east1)
-                                                                      │  fetch MPB (Referer header), trim to 19–28°N 116–126°E, dedupe by MMSI
-                                                                      └─ service binding PROXY ─▶ gods-eye-opensky-proxy  POST /api/ships/ingest  {ships:[…]}
+                                                                      │  fetch MPB (Referer header) — body is NOT parsed here
+                                                                      └─ service binding PROXY ─▶ gods-eye-opensky-proxy  POST /api/ships/ingest-mpb  (raw GeoJSON stream)
+                                                                                                   └─ Hub Durable Object: parse, trim to 19–28°N 116–126°E, dedupe by MMSI
 ```
 
 * Placement only applies to a Worker's `fetch` handler (not `scheduled`), which is why a separate trigger (GitHub Actions) calls `POST /run`.
@@ -18,6 +19,12 @@ GitHub Actions cron (*/5)  ──POST /run (Bearer INGEST_TOKEN)──▶  mpb-f
 * Auth: `Authorization: Bearer <INGEST_TOKEN>` (the same secret as the main Worker; constant-time compare). Wrong/missing token → 401.
 * The main Worker keeps at most 4,000 vessels (`trimShips`, ranked by interest then freshness) and serves ≤ 2,500 in `/api/ships`, so `tracked`/`count` are lower than `ships`.
 
+## Why the Worker must not parse the 3 MB GeoJSON (incident 2026-11-03)
+From ~05:26 UTC every `POST /run` returned an empty HTTP 503 (tail outcome **`exceededCpu`**, "Worker exceeded CPU time limit"): `JSON.parse` + normalising ~8,000 features does not fit the free plan's 10 ms CPU budget any more.
+The run log in KV stopped (the Worker died before it could write) and after 30 min without MPB data `/api/ships` dropped every vessel (`KEEP_MS` = 30 min) — the store was not wiped by a deploy.
+Fix: the fetcher only streams the response body to `/api/ships/ingest-mpb`; the Durable Object (30 s CPU) does the parsing. The proxy cron additionally watches `mpbAgeSec` (`GET /api/health`) and, when a 5-min cycle was missed (> 7 min),
+calls this Worker's `/run` itself through the `FETCHER` service binding (`X-Trigger: proxy-watchdog`). Debug a failing run with a live tail: `POST /accounts/<id>/workers/scripts/mpb-fetcher/tails` → connect to the returned `wss://tail.developers.workers.dev/<id>` (subprotocol `trace-v1`).
+
 ## Build / deploy
 ```
 npx esbuild workers/mpb-fetcher/src/index.mjs --bundle --format=esm --minify --target=es2022 --legal-comments=none --outfile=workers/mpb-fetcher/dist/worker.js
@@ -26,7 +33,9 @@ Upload `dist/worker.js` as script `mpb-fetcher` (multipart, `main_module: worker
 ```json
 { "placement": { "region": "gcp:asia-east1" },
   "bindings": [ { "type": "service", "name": "PROXY", "service": "gods-eye-opensky-proxy", "environment": "production" },
-                { "type": "secret_text", "name": "INGEST_TOKEN", "text": "<same value as the main Worker's INGEST_TOKEN>" } ] }
+                { "type": "service", "name": "SELF", "service": "mpb-fetcher", "environment": "production" },
+                { "type": "kv_namespace", "name": "LOG", "namespace_id": "<mpb-fetcher-log KV id>" } ],
+  "keep_bindings": ["secret_text"] }   // keeps INGEST_TOKEN; on first creation add { "type": "secret_text", "name": "INGEST_TOKEN", "text": "<same value as the main Worker's INGEST_TOKEN>" }
 ```
 via `PUT /accounts/<id>/workers/scripts/mpb-fetcher`, then `POST …/scripts/mpb-fetcher/subdomain {"enabled":true}`. (`wrangler.toml` here mirrors this.)
 Smoke test: `curl https://mpb-fetcher.numenaslan.workers.dev/health`; `curl -X POST -H "Authorization: Bearer $INGEST_TOKEN" https://mpb-fetcher.numenaslan.workers.dev/run`.

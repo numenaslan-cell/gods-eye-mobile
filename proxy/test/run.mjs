@@ -1,7 +1,7 @@
 // node proxy/test/run.mjs  — unit tests for the Worker's pure logic (no network, no Cloudflare runtime needed; Node >= 20).
 import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
-import { applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan, isGov, ccgWhy } from "../src/ais.mjs";
+import { normalizeMpbCollection, applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan, isGov, ccgWhy } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
@@ -362,4 +362,13 @@ await ok("CWA S3 mirror: warnings + typhoon JSON (cwaopendata.dataset wrapper) n
   assert.deepEqual(w.map((x) => x.phenomena + x.significance), ["陸上強風特報", "大雨特報"]); assert.deepEqual(w[0].locations, ["桃園市", "屏東縣", "澎湖縣"]);
   assert.equal(s3Warnings(fx("cwa-s3-warnings.json"), Date.parse("2026-11-04T00:00:00Z")).length, 0, "expired warnings dropped");
   const t = s3Typhoons(fx("cwa-s3-typhoon.json")); assert.equal(t.length, 1); assert.equal(t[0].name, "IN-FA"); assert.equal(t[0].cwaName, "煙花"); assert.ok(t[0].track.length > 10 && t[0].forecast.length > 3);
+});
+
+await ok("MPB raw collection (what mpb-fetcher now streams to the Durable Object): per-MMSI newest record, Taiwan box only, counts for the run log", () => {
+  const f = (mmsi, lat, lon, rt, extra = {}) => ({ type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] }, properties: { MMSI: mmsi, Latitude: lat, Longitude: lon, Record_Time: rt, ShipName: "X" + mmsi, ...extra } });
+  const gj = { type: "FeatureCollection", features: [f("412000001", 24.1, 120.2, "2026/11/03 13:00:00"), f("412000001", 24.2, 120.3, "2026/11/03 13:05:00"), f("416000002", 25.0, 121.5, "2026/11/03 13:02:00"), f("431000003", 35.6, 139.7, "2026/11/03 13:03:00"), f("bad", 24, 121, "2026/11/03 13:03:00")] };
+  const c = normalizeMpbCollection(gj);
+  assert.equal(c.features, 5); assert.equal(c.ships.length, 2, "Tokyo + invalid MMSI dropped, duplicate MMSI merged");
+  assert.equal(c.ships.find((s) => s.mmsi === "412000001").lat, 24.2, "newest record wins"); assert.ok(c.newest > c.oldest);
+  assert.deepEqual(normalizeMpbCollection({}), { features: 0, ships: [], newest: null, oldest: null }); assert.equal(normalizeMpbCollection({ features: [f("431000003", 35.6, 139.7, "2026/11/03 13:03:00")] }).ships.length, 0);
 });

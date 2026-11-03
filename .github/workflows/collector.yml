@@ -55,3 +55,21 @@ jobs:
           AIS_SEC: "60"
           MPB: "0"   # MPB is fetched by the placed Worker above (mpbais.motcmpb.gov.tw times out from GitHub runners)
         run: node scripts/collect-once.mjs
+      - name: Health gate (ships present, MPB fresh, bindings intact)
+        if: ${{ !cancelled() }}   # runs even when an earlier step failed; any problem here turns the run red (GitHub e-mails the owner)
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          set -uo pipefail
+          base="${WORKER_URL:-https://gods-eye-opensky-proxy.numenaslan.workers.dev}"; base="${base%/}"
+          code=$(curl -sS -m 30 -H 'Cache-Control: no-cache' -o health.json -w '%{http_code}' "$base/api/health?_=$(date +%s)" || echo 000)
+          cat health.json 2>/dev/null; echo
+          count=$(jq -r '.ships.count // 0' health.json 2>/dev/null || echo 0); age=$(jq -r '.ships.mpbAgeSec // 99999' health.json 2>/dev/null || echo 99999)
+          missing=$(jq -r '(.missingBindings // []) | join(",")' health.json 2>/dev/null || echo "?")
+          { echo "### Health gate"; echo "HTTP $code · ships=$count · mpbAgeSec=$age · missing bindings: ${missing:-none}"; } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          if [ "$count" -lt 1 ]; then echo "::error::/api/health: ships.count=0 (the map would be empty)"; fail=1; fi
+          if [ "$age" -gt 900 ]; then echo "::error::/api/health: MPB data is stale (mpbAgeSec=$age > 900)"; fail=1; fi
+          if [ -n "$missing" ]; then echo "::error::/api/health: Worker bindings/secrets missing after a deploy: $missing"; fail=1; fi
+          if [ "$code" != 200 ]; then echo "::error::/api/health answered HTTP $code"; fail=1; fi
+          exit $fail

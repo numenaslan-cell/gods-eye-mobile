@@ -6,6 +6,7 @@
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
  *   GET  /api/quakes | /api/typhoon | /api/warnings   CWA open data (secret CWA_API_KEY); {enabled:false} -> client falls back to USGS
+ *   GET  /api/health       ship/MPB watchdog (503 when 0 ships or mpbAgeSec > 15 min); POST /api/ships/ingest-mpb raw MPB GeoJSON from mpb-fetcher (Bearer INGEST_TOKEN)
  *   GET  /api/quakes/live  merged quakes: CWA (authoritative, fetched every 2 min through the Taiwan-placed pla-intel Worker; GitHub Actions ingest is the backup) + USGS + EMSC + GFZ, deduped, each with its source(s)
  *   GET  /api/cga          CGA (海巡署) RSS items mentioning 海警, parsed in the Hub DO, cached 30 min
  *   GET  /api/pla          PLA-activity intel: Taiwan MND daily bulletins + Japan Joint Staff releases (scraped by the placed `pla-intel` Worker via service binding INTEL; PDF details posted by GitHub Actions)
@@ -20,7 +21,7 @@
 import createPasses from "../../assets/passes.js";
 import satellite from "../../assets/vendor/satellite.min.js";
 import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
-import { applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
+import { normalizeMpbCollection, applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
 import { plaPublic, pruneJsEvents, sanitizeJsDetail, sanitizeMndDay } from "./intel.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
@@ -36,6 +37,7 @@ const LOCAL_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 const originOk = (o) => ALLOWED_ORIGINS.includes(o) || LOCAL_RE.test(o);
 const MAX_SUBS = 200;
 const COLLECT_MS = 25000, STALE_MS = 90000, KEEP_MS = 30 * 60000;
+const MPB_STALE_SEC = 15 * 60, MPB_HEAL_SEC = 7 * 60; // /api/health + notice at 15 min; the cron asks mpb-fetcher to run once a 5-min cycle was missed (7 min)
 
 const corsFor = (origin) => (extra = {}) => ({
   "Access-Control-Allow-Origin": originOk(origin) ? origin : ALLOWED_ORIGINS[0],
@@ -87,6 +89,11 @@ export default {
 
     const hub = env.HUB ? env.HUB.get(env.HUB.idFromName("main")) : null;
 
+    if (request.method === "GET" && p === "/api/health") { // ship-data / MPB watchdog state; HTTP 503 when there are 0 ships or MPB is older than 15 min
+      if (!hub) return json(cors, { ok: false, error: "no hub" }, 503);
+      const r = await hub.fetch("https://hub/health");
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "no-store" }) });
+    }
     if (request.method === "GET" && p === "/api/ships") {
       if (!hub || !(env.AISSTREAM_API_KEY || env.INGEST_TOKEN)) return json(cors, { error: "AIS not configured" }, 503);
       const r = await hub.fetch("https://hub/ships");
@@ -100,6 +107,15 @@ export default {
       const given = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
       if (!(await tokenOk(given, env.INGEST_TOKEN))) return json(cors, { error: "unauthorized" }, 401);
       const r = await hub.fetch("https://hub/ingest", { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
+      return json(cors, await r.json(), r.status);
+    }
+    if (request.method === "POST" && p === "/api/ships/ingest-mpb") {
+      // Raw MPB GeoJSON (~3 MB) streamed straight through by the Taiwan-placed `mpb-fetcher` Worker. Parsing + normalising happens in the Durable Object
+      // (30 s CPU), because a free-plan Worker's 10 ms CPU budget cannot parse 3 MB of JSON (that is exactly how mpb-fetcher died on 2026-11-03: exceededCpu).
+      if (!hub || !env.INGEST_TOKEN) return json(cors, { error: "ingest not configured" }, 503);
+      const given = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+      if (!(await tokenOk(given, env.INGEST_TOKEN))) return json(cors, { error: "unauthorized" }, 401);
+      const r = await hub.fetch("https://hub/ingest-mpb", { method: "POST", body: request.body, headers: { "Content-Type": "application/json" } });
       return json(cors, await r.json(), r.status);
     }
     if (request.method === "POST" && p === "/api/cwa/ingest") {
@@ -160,7 +176,13 @@ export default {
   async scheduled(event, env, ctx) {
     if (!env.HUB) return;
     const hub = env.HUB.get(env.HUB.idFromName("main"));
-    ctx.waitUntil(hub.fetch("https://hub/cron", { method: "POST" }).then((r) => r.text()).catch(() => {}));
+    ctx.waitUntil(hub.fetch("https://hub/cron", { method: "POST" }).then((r) => r.json()).then(async (rep) => {
+      // watchdog: MPB older than 7 min (a 5-min fetcher cycle was missed) -> ask the Taiwan-placed mpb-fetcher to run now (service binding FETCHER; same INGEST_TOKEN)
+      if (!(rep && rep.mpb && rep.mpb.needHeal) || !env.FETCHER || !env.INGEST_TOKEN) return;
+      let note;
+      try { const r = await env.FETCHER.fetch("https://fetcher/run", { method: "POST", headers: { Authorization: "Bearer " + env.INGEST_TOKEN, "X-Trigger": "proxy-watchdog" }, signal: AbortSignal.timeout(40000) }); note = { status: r.status, ok: r.ok }; } catch (e) { note = { status: 0, ok: false, error: String((e && e.message) || e).slice(0, 100) }; }
+      await hub.fetch("https://hub/mpb-note", { method: "POST", body: JSON.stringify(note) });
+    }).catch(() => {}));
     ctx.waitUntil(hub.fetch("https://hub/quake-cron", { method: "POST" }).then((r) => r.text()).catch(() => {})); // separate invocation = separate 10 ms CPU budget
   },
 };
@@ -183,6 +205,9 @@ export class Hub {
     try {
       if (path === "/ships") return this.shipsResponse();
       if (path === "/ingest") return this.ingest(request);
+      if (path === "/ingest-mpb") return this.ingestMpbRaw(request);
+      if (path === "/mpb-note") { let b = {}; try { b = await request.json(); } catch { /* none */ } this.mpbHeal = { ...(this.mpbHeal || {}), at: Date.now(), ...b }; return new Response("{}"); }
+      if (path === "/health") return this.healthResponse();
       if (path === "/cga") return this.cga();
       if (path === "/cwa-ingest") return this.cwaIngest(request);
       if (path === "/quakes-live") return new Response(this.quakesLiveBody(), { headers: { "Content-Type": "application/json" } });
@@ -194,6 +219,7 @@ export class Hub {
       if (path === "/cron") {
         const pla = await this.plaRefresh(false).catch((e) => "err:" + String((e && e.message) || e).slice(0, 80));
         const report = await this.runAlerts(); if (pla) report.pla = pla;
+        report.mpb = this.mpbCheck(Date.now());
         this.cron = { at: Date.now(), report }; await this.ctx.storage.put("cron", this.cron); // heartbeat, visible in /api/ships -> cron
         return new Response(JSON.stringify(report), { headers: { "Content-Type": "application/json" } });
       }
@@ -273,6 +299,36 @@ export class Hub {
     if (mpb.length) { this.mpbAt = now; await this.ctx.storage.put("mpbAt", now); }
     await this.ctx.storage.put({ ships: this.ships, lastCollect: this.lastCollect, lastError: "", diag: this.diag });
     return new Response(JSON.stringify({ ok: true, received: msgs.length, applied: n, mpb: m, tracked: Object.keys(this.ships).length }), { headers: { "Content-Type": "application/json" } });
+  }
+
+  /** raw MPB GeoJSON from mpb-fetcher -> normalise here (DO has the CPU) -> same path as the pre-normalised ingest */
+  async ingestMpbRaw(request) {
+    const J = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
+    let gj; try { gj = await request.json(); } catch { return J({ error: "bad json (MPB body is not JSON — Referer rejected / IP blocked?)" }, 502); }
+    const c = normalizeMpbCollection(gj);
+    if (!c.features) return J({ error: "MPB returned no features (Referer rejected / IP blocked?)", features: 0 }, 502);
+    if (!c.ships.length) return J({ error: "MPB: 0 ships in Taiwan box", features: c.features }, 502);
+    const r = await this.ingest(new Request("https://hub/ingest", { method: "POST", body: JSON.stringify({ ships: c.ships }) }));
+    const out = await r.json();
+    return J({ ...out, features: c.features, ships: c.ships.length, newestRecord: new Date(c.newest).toISOString(), oldestRecord: new Date(c.oldest).toISOString() }, r.status);
+  }
+
+  /* ---- MPB freshness monitor (cron): exposes mpbAgeSec / stale flag and asks the placed fetcher to run when a cycle was missed ---- */
+  mpbCheck(now) {
+    const age = this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, stale = age == null || age > MPB_STALE_SEC;
+    const H = this.mpbHealth = this.mpbHealth || {};
+    H.checkedAt = now; H.mpbAgeSec = age; H.stale = stale;
+    if (stale) H.staleSince = H.staleSince || now; else H.staleSince = null;
+    const needHeal = (age == null || age > MPB_HEAL_SEC) && now - ((this.mpbHeal && this.mpbHeal.at) || 0) > 240000;
+    return { ageSec: age, stale, needHeal, staleSince: H.staleSince };
+  }
+  async healthResponse() {
+    const now = Date.now(), h = this.mpbCheck(now), list = publicShips(this.ships, now, KEEP_MS);
+    const bindings = { SUBS: !!this.env.SUBS, INTEL: !!this.env.INTEL, FETCHER: !!this.env.FETCHER, INGEST_TOKEN: !!this.env.INGEST_TOKEN }; // booleans only: a redeploy that drops a binding/secret shows up here
+    const missing = Object.keys(bindings).filter((k) => !bindings[k]);
+    const bad = list.length === 0 || h.stale || missing.length > 0;
+    const body = { ok: !bad, time: now, bindings, missingBindings: missing, ships: { count: list.length, updatedAgeSec: this.lastCollect ? Math.round((now - this.lastCollect) / 1000) : null, mpbAgeSec: h.ageSec, mpbStale: h.stale, mpbStaleSinceSec: h.staleSince ? Math.round((now - h.staleSince) / 1000) : null, thresholdSec: MPB_STALE_SEC, selfHeal: this.mpbHeal || null }, cron: this.cron || null };
+    return new Response(JSON.stringify(body), { status: bad ? 503 : 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
   }
 
   /* ---- remembered CCG MMSIs (KV `ccg:known`): a hull seen once with a CCG name stays "suspected CCG" even when it later broadcasts another/blank name ---- */
@@ -449,7 +505,7 @@ export class Hub {
     if (!this.collecting && now - this.lastAttempt > STALE_MS && age > STALE_MS && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 50);
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
-    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, mpbStale: !this.mpbAt || now - this.mpbAt > MPB_STALE_SEC * 1000, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
   }
 
   async collect(ms = COLLECT_MS) {
