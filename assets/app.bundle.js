@@ -4155,7 +4155,7 @@ void main() {
   function jsLine(ev) {
     var heads = [], bits = [];
     (ev.groups || []).forEach(function (g) {
-      var what = ev.kind === "air" ? (g.types || []).join(" + ") : (g.classEn || g.classes || []).map(function (c) { return String(c).replace(/ \(Type /, " (T").replace(/ (destroyer|frigate|replenishment ship|fast combat support ship|intelligence ship|amphibious ship|corvette)$/, ""); }).join(" + ");
+      var what = ev.kind === "air" ? (g.types || []).join(" + ") : (g.classEn || g.classes || []).map(function (c) { return String(c).replace(/ (destroyer|frigate|replenishment ship|fast combat support ship|intelligence ship|amphibious ship|corvette)$/, ""); }).join(" + ");
       var where = (g.whereEn && g.whereEn[0]) || (g.where && g.where[0]) || "";
       var dir = g.dirs && g.dirs[0] ? " → " + (DIR_EN[g.dirs[0]] || g.dirs[0]) : "";
       var n = (g.notes || []).length ? " · " + g.notes.join(" ") : "";
