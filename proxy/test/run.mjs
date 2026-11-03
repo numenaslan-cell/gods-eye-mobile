@@ -372,3 +372,15 @@ await ok("MPB raw collection (what mpb-fetcher now streams to the Durable Object
   assert.equal(c.ships.find((s) => s.mmsi === "412000001").lat, 24.2, "newest record wins"); assert.ok(c.newest > c.oldest);
   assert.deepEqual(normalizeMpbCollection({}), { features: 0, ships: [], newest: null, oldest: null }); assert.equal(normalizeMpbCollection({ features: [f("431000003", 35.6, 139.7, "2026/11/03 13:03:00")] }).ships.length, 0);
 });
+
+await ok("collector watchdog: stale collector + token -> one workflow_dispatch per 15 min; no token -> never", async () => {
+  const { Hub } = await import("../src/worker.mjs");
+  const mk = (env) => { const store = new Map(); const ctx = { blockConcurrencyWhile: (f) => f(), storage: { get: async (k) => (Array.isArray(k) ? new Map() : store.get(k)), put: async (k, v) => { if (typeof k === "string") store.set(k, v); }, getAlarm: async () => null } }; return new Hub(ctx, env); };
+  await new Promise((r) => setTimeout(r, 5));
+  const now = Date.now();
+  const noTok = mk({}); assert.equal(noTok.collectorCheck(now).needDispatch, false); assert.equal(noTok.collectorCheck(now).stale, true); assert.equal(noTok.collectorCheck(now).dispatchEnabled, false);
+  const h = mk({ GH_DISPATCH_TOKEN: "x" }); assert.equal(h.collectorCheck(now).needDispatch, true, "never reported + token -> dispatch");
+  h.ghd = { at: now - 5 * 60000, ok: true }; assert.equal(h.collectorCheck(now).needDispatch, false, "throttled: dispatched 5 min ago");
+  h.ghd = { at: now - 16 * 60000, ok: true }; assert.equal(h.collectorCheck(now).needDispatch, true);
+  h.collectorAt = now - 120000; assert.equal(h.collectorCheck(now).needDispatch, false, "collector fresh (2 min)"); assert.equal(h.collectorCheck(now).ageSec, 120);
+});

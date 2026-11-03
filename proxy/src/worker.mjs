@@ -11,6 +11,7 @@
  *   GET  /api/cga          CGA (海巡署) RSS items mentioning 海警, parsed in the Hub DO, cached 30 min
  *   GET  /api/pla          PLA-activity intel: Taiwan MND daily bulletins + Japan Joint Staff releases (scraped by the placed `pla-intel` Worker via service binding INTEL; PDF details posted by GitHub Actions)
  *   POST /api/pla/ingest | /api/pla/refresh | GET /api/pla/pdf/:id   Bearer INGEST_TOKEN (GitHub Actions)
+ *   cron collector watchdog: if the GitHub Actions collector (aisstream + CWA backup) has not reported for 10 min AND secret GH_DISPATCH_TOKEN exists -> workflow_dispatch collector.yml (max 1 per 15 min). No token = no-op; /api/health.collector shows the state.
  *   POST /api/push/subscribe | /unsubscribe | /test   Web Push subscriptions (stored in KV)
  *   cron (every 2 min)     M4.5+ quakes near Taiwan, China Coast Guard vessel in AIS, upcoming ISS pass -> Web Push
  *
@@ -37,6 +38,8 @@ const LOCAL_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 const originOk = (o) => ALLOWED_ORIGINS.includes(o) || LOCAL_RE.test(o);
 const MAX_SUBS = 200;
 const COLLECT_MS = 25000, STALE_MS = 90000, KEEP_MS = 30 * 60000;
+const COLLECTOR_STALE_SEC = 10 * 60, GH_DISPATCH_MIN_MS = 15 * 60000; // GitHub Actions collector (aisstream + CWA REST backup): "stale" after 10 min; at most one workflow_dispatch per 15 min
+const GH_REPO_DEFAULT = "numenaslan-cell/gods-eye-mobile", GH_WORKFLOW = "collector.yml";
 const MPB_STALE_SEC = 15 * 60, MPB_HEAL_SEC = 7 * 60; // /api/health + notice at 15 min; the cron asks mpb-fetcher to run once a 5-min cycle was missed (7 min)
 
 const corsFor = (origin) => (extra = {}) => ({
@@ -183,6 +186,16 @@ export default {
       try { const r = await env.FETCHER.fetch("https://fetcher/run", { method: "POST", headers: { Authorization: "Bearer " + env.INGEST_TOKEN, "X-Trigger": "proxy-watchdog" }, signal: AbortSignal.timeout(40000) }); note = { status: r.status, ok: r.ok }; } catch (e) { note = { status: 0, ok: false, error: String((e && e.message) || e).slice(0, 100) }; }
       await hub.fetch("https://hub/mpb-note", { method: "POST", body: JSON.stringify(note) });
     }).catch(() => {}));
+    ctx.waitUntil(hub.fetch("https://hub/collector-poll", { method: "POST" }).then((r) => r.json()).then(async (c) => {
+      // GitHub's own `schedule` trigger is unreliable; fire the collector workflow from this (reliable) Cloudflare cron when it is overdue. Only with the owner's own fine-grained token (secret GH_DISPATCH_TOKEN, Actions: write on this repo).
+      if (!c || !c.needDispatch || !env.GH_DISPATCH_TOKEN) return;
+      let note;
+      try {
+        const r = await fetch("https://api.github.com/repos/" + (env.GH_REPO || GH_REPO_DEFAULT) + "/actions/workflows/" + GH_WORKFLOW + "/dispatches", { method: "POST", headers: { Authorization: "Bearer " + env.GH_DISPATCH_TOKEN, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "gods-eye-proxy-cron", "Content-Type": "application/json" }, body: JSON.stringify({ ref: "main" }), signal: AbortSignal.timeout(15000) });
+        note = { status: r.status, ok: r.status === 204 }; await r.body?.cancel();
+      } catch (e) { note = { status: 0, ok: false, error: String((e && e.message) || e).slice(0, 100) }; }
+      await hub.fetch("https://hub/gh-note", { method: "POST", body: JSON.stringify(note) });
+    }).catch(() => {}));
     ctx.waitUntil(hub.fetch("https://hub/quake-cron", { method: "POST" }).then((r) => r.text()).catch(() => {})); // separate invocation = separate 10 ms CPU budget
   },
 };
@@ -193,7 +206,7 @@ export class Hub {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
     ctx.blockConcurrencyWhile(async () => {
-      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt", "pla", "qk", "cwaIngest"]); this.cwaIng = s.get("cwaIngest") || {}; this.qk = s.get("qk") || { src: {}, ev: {}, fs: {}, since: Date.now() }; this.pla = s.get("pla") || { mnd: { list: [], days: {} }, js: { events: [], details: {} } }; this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
+      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt", "pla", "qk", "cwaIngest", "collectorAt", "aisAt", "ghd"]); this.collectorAt = s.get("collectorAt") || 0; this.aisAt = s.get("aisAt") || 0; this.ghd = s.get("ghd") || null; this.cwaIng = s.get("cwaIngest") || {}; this.qk = s.get("qk") || { src: {}, ev: {}, fs: {}, since: Date.now() }; this.pla = s.get("pla") || { mnd: { list: [], days: {} }, js: { events: [], details: {} } }; this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
       this.ships = s.get("ships") || {}; this.lastCollect = s.get("lastCollect") || 0; this.lastError = s.get("lastError") || "";
       this.everCollected = this.lastCollect > 0;
       await this.loadKnown(); this.markKnown();
@@ -207,7 +220,9 @@ export class Hub {
       if (path === "/ingest") return this.ingest(request);
       if (path === "/ingest-mpb") return this.ingestMpbRaw(request);
       if (path === "/mpb-note") { let b = {}; try { b = await request.json(); } catch { /* none */ } this.mpbHeal = { ...(this.mpbHeal || {}), at: Date.now(), ...b }; return new Response("{}"); }
+      if (path === "/collector-poll") return new Response(JSON.stringify(this.collectorCheck(Date.now())), { headers: { "Content-Type": "application/json" } });
       if (path === "/health") return this.healthResponse();
+      if (path === "/gh-note") { let b = {}; try { b = await request.json(); } catch { /* none */ } this.ghd = { at: Date.now(), status: b.status | 0, ok: !!b.ok, error: b.error ? String(b.error).slice(0, 100) : undefined }; await this.ctx.storage.put("ghd", this.ghd); return new Response("{}"); }
       if (path === "/cga") return this.cga();
       if (path === "/cwa-ingest") return this.cwaIngest(request);
       if (path === "/quakes-live") return new Response(this.quakesLiveBody(), { headers: { "Content-Type": "application/json" } });
@@ -219,7 +234,7 @@ export class Hub {
       if (path === "/cron") {
         const pla = await this.plaRefresh(false).catch((e) => "err:" + String((e && e.message) || e).slice(0, 80));
         const report = await this.runAlerts(); if (pla) report.pla = pla;
-        report.mpb = this.mpbCheck(Date.now());
+        report.mpb = this.mpbCheck(Date.now()); report.ais = this.collectorCheck(Date.now());
         this.cron = { at: Date.now(), report }; await this.ctx.storage.put("cron", this.cron); // heartbeat, visible in /api/ships -> cron
         return new Response(JSON.stringify(report), { headers: { "Content-Type": "application/json" } });
       }
@@ -256,7 +271,7 @@ export class Hub {
       ing[kind] = { at: now, body: JSON.stringify({ enabled: true, source: "cwa", attribution: String(v.attribution || "").slice(0, 80), time: now, via: "collector", [field]: v[field].slice(0, max) }) };
       got.push(kind);
     }
-    if (got.length) { this.cwaIng = ing; await this.ctx.storage.put("cwaIngest", ing); this.cwaCache = {}; }
+    if (got.length) { this.cwaIng = ing; this.collectorAt = now; await this.ctx.storage.put({ cwaIngest: ing, collectorAt: now }); this.cwaCache = {}; }
     return new Response(JSON.stringify({ ok: true, stored: got }), { headers: { "Content-Type": "application/json" } });
   }
 
@@ -289,6 +304,7 @@ export class Hub {
     const msgs = Array.isArray(body && body.messages) ? body.messages.slice(0, 5000) : [];
     const mpb = Array.isArray(body && body.ships) ? body.ships.slice(0, 8000) : []; // pre-normalised MPB (Taiwan AIS) records from the collector
     const now = Date.now(); let n = 0, m = 0;
+    if (Array.isArray(body && body.messages)) { this.collectorAt = now; await this.ctx.storage.put("collectorAt", now); if (msgs.length) { this.aisAt = now; await this.ctx.storage.put("aisAt", now); } } // GitHub Actions collector heartbeat / aisstream freshness
     for (const x of msgs) if (applyAis(this.ships, x, now)) n++;
     for (const x of mpb) if (applyMpb(this.ships, x, now)) m++;
     for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
@@ -322,12 +338,17 @@ export class Hub {
     const needHeal = (age == null || age > MPB_HEAL_SEC) && now - ((this.mpbHeal && this.mpbHeal.at) || 0) > 240000;
     return { ageSec: age, stale, needHeal, staleSince: H.staleSince };
   }
+  /* ---- GitHub Actions collector monitor: its cron is best-effort ("every 5 min" really runs every 40-75 min), so when a GH_DISPATCH_TOKEN secret exists the proxy cron triggers workflow_dispatch itself ---- */
+  collectorCheck(now) {
+    const age = this.collectorAt ? Math.round((now - this.collectorAt) / 1000) : null, stale = age == null || age > COLLECTOR_STALE_SEC, enabled = !!this.env.GH_DISPATCH_TOKEN;
+    return { ageSec: age, aisAgeSec: this.aisAt ? Math.round((now - this.aisAt) / 1000) : null, stale, dispatchEnabled: enabled, needDispatch: enabled && stale && now - ((this.ghd && this.ghd.at) || 0) > GH_DISPATCH_MIN_MS, lastDispatch: this.ghd || null };
+  }
   async healthResponse() {
     const now = Date.now(), h = this.mpbCheck(now), list = publicShips(this.ships, now, KEEP_MS);
     const bindings = { SUBS: !!this.env.SUBS, INTEL: !!this.env.INTEL, FETCHER: !!this.env.FETCHER, INGEST_TOKEN: !!this.env.INGEST_TOKEN }; // booleans only: a redeploy that drops a binding/secret shows up here
     const missing = Object.keys(bindings).filter((k) => !bindings[k]);
     const bad = list.length === 0 || h.stale || missing.length > 0;
-    const body = { ok: !bad, time: now, bindings, missingBindings: missing, ships: { count: list.length, updatedAgeSec: this.lastCollect ? Math.round((now - this.lastCollect) / 1000) : null, mpbAgeSec: h.ageSec, mpbStale: h.stale, mpbStaleSinceSec: h.staleSince ? Math.round((now - h.staleSince) / 1000) : null, thresholdSec: MPB_STALE_SEC, selfHeal: this.mpbHeal || null }, cron: this.cron || null };
+    const body = { ok: !bad, time: now, bindings, missingBindings: missing, ships: { count: list.length, updatedAgeSec: this.lastCollect ? Math.round((now - this.lastCollect) / 1000) : null, mpbAgeSec: h.ageSec, mpbStale: h.stale, mpbStaleSinceSec: h.staleSince ? Math.round((now - h.staleSince) / 1000) : null, thresholdSec: MPB_STALE_SEC, selfHeal: this.mpbHeal || null }, collector: (({ ageSec, aisAgeSec, stale, dispatchEnabled, lastDispatch }) => ({ ageSec, aisAgeSec, stale, dispatchEnabled, lastDispatch }))(this.collectorCheck(now)), cron: this.cron || null };
     return new Response(JSON.stringify(body), { status: bad ? 503 : 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
   }
 
@@ -505,7 +526,7 @@ export class Hub {
     if (!this.collecting && now - this.lastAttempt > STALE_MS && age > STALE_MS && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 50);
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
-    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, mpbStale: !this.mpbAt || now - this.mpbAt > MPB_STALE_SEC * 1000, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, aisAgeSec: this.aisAt ? Math.round((now - this.aisAt) / 1000) : null, collectorAgeSec: this.collectorAt ? Math.round((now - this.collectorAt) / 1000) : null, mpbStale: !this.mpbAt || now - this.mpbAt > MPB_STALE_SEC * 1000, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
   }
 
   async collect(ms = COLLECT_MS) {

@@ -35,7 +35,7 @@
   var listeners = [];
   var state = {
     flights: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "adsb.lol", nextTry: 0 },
-    ships: { unavailable: "", unavailableAge: 0, status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
+    ships: { unavailable: "", unavailableAge: 0, mpbAt: 0, aisAt: 0, collectorAt: 0, dataAt: 0, status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "aisstream.io", nextTry: 0, note: "" },
     quakes: { status: "loading", list: [], count: 0, updated: 0, rev: 0, error: "", source: "USGS", sources: null, liveUpdated: 0, nextTry: 0 },
     // Taiwan CWA (交通部中央氣象署) extras: only populated when the Worker has the owner's CWA_API_KEY secret (GET /quakes says enabled:true); otherwise USGS only
     // PLA daily activity (third-party CSV built from Taiwan MND daily reports) and CGA (海巡署) RSS items about the China Coast Guard (海警)
@@ -256,6 +256,9 @@
       if (j.warming) { setShips("loading", [], "", "AIS relay warming up…"); scheduleShips(20000); return; }
       var list = parseShips(j);
       // clear "ship data temporarily unavailable" signal for the UI: nothing to draw, or the MPB (Taiwan AIS) feed behind it has stopped (> 15 min)
+      var nowMs = Date.now(), sh0 = state.ships; // data-freshness timestamps (ms) for the UI: MPB (primary), aisstream + collector (GitHub Actions, best-effort), server collect time
+      sh0.mpbAt = j.mpbAgeSec != null ? nowMs - j.mpbAgeSec * 1000 : 0; sh0.aisAt = j.aisAgeSec != null ? nowMs - j.aisAgeSec * 1000 : 0;
+      sh0.collectorAt = j.collectorAgeSec != null ? nowMs - j.collectorAgeSec * 1000 : 0; sh0.dataAt = j.ageSec != null ? nowMs - j.ageSec * 1000 : 0;
       state.ships.unavailableAge = j.mpbAgeSec != null ? Math.round(j.mpbAgeSec / 60) : 0;
       state.ships.unavailable = !list.length ? "empty" : (j.mpbStale || (j.mpbAgeSec != null && j.mpbAgeSec > 900)) ? "stale" : "";
       setShips("live", list, "", j.error ? "stale: " + j.error : (j.total > list.length ? "TOP " + list.length + " OF " + j.total : (j.ageSec != null ? "feed " + j.ageSec + "s old" : "")));

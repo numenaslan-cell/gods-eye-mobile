@@ -32,6 +32,70 @@
 * 📲 **PWA 可安裝**：manifest、圖示、Service Worker（只快取靜態檔，資料一律走網路）
 * 🧯 **優雅的 Demo 退路**：CORS 被擋、斷網、逾時、HTTP 429 時，顯示橘色 **DEMO DATA** 徽章並改用示範資料，之後自動退避重試
 
+## 系統架構
+
+![系統架構圖](docs/architecture.png)
+
+```mermaid
+flowchart TB
+  subgraph SRC["① 資料來源 Sources"]
+    direction LR
+    MPB["交通部航港局 MPB<br/>AIS ~7,000 艘"]
+    AIS["aisstream.io<br/>AIS WebSocket"]
+    CWA["CWA S3 mirror<br/>(+ CWA REST 備援)"]
+    QK["USGS · EMSC · GFZ<br/>地震"]
+    MND["國防部 MND<br/>每日通報"]
+    JS["日本統合幕僚監部"]
+    ADSB["adsb.lol / adsb.fi<br/>OpenSky 航班"]
+    CEL["CelesTrak<br/>衛星 TLE"]
+    NASA["NASA GIBS<br/>Blue Marble"]
+  end
+
+  subgraph CF["② Cloudflare Workers（免費方案）"]
+    direction LR
+    MF["mpb-fetcher<br/>台灣 placement · cron 5 分"]
+    PI["pla-intel<br/>台灣 placement"]
+    subgraph PX["gods-eye-opensky-proxy"]
+      direction TB
+      API["路由 /api/ships · quakes/live<br/>pla · health · push"]
+      HUB[("Durable Object Hub<br/>船舶 · 地震 · PLA 狀態")]
+      CRON["cron 2 分 + watchdog"]
+      KV[("KV 推播訂閱")]
+    end
+  end
+
+  GHA["③ GitHub Actions<br/>collector.yml: aisstream + CWA 備援<br/>pla-intel.yml: PDF 艦號"]
+  PAGES["④ GitHub Pages<br/>手機 PWA · React + three.js"]
+  PUSH["⑤ Web Push<br/>FCM / Mozilla / Apple"]
+  USER(("手機使用者"))
+
+  MPB --> MF
+  MND --> PI
+  JS --> PI
+  QK --> HUB
+  CWA --> HUB
+  CEL -->|"ISS TLE"| HUB
+  AIS --> GHA
+  CWA -.->|"REST"| GHA
+  ADSB --> API
+  MF -->|"service binding"| API
+  PI -->|"service binding"| API
+  GHA -->|"POST ingest"| API
+  CRON -->|"逾時重跑 /run"| MF
+  CRON -.->|"workflow_dispatch<br/>需 GH_DISPATCH_TOKEN"| GHA
+  API <--> HUB
+  CRON --- HUB
+  HUB --- KV
+  API -->|"JSON + CORS"| PAGES
+  CEL -->|"TLE"| PAGES
+  NASA -->|"圖磚 / 貼圖"| PAGES
+  HUB -->|"地震 · 海警 · ISS"| PUSH
+  PUSH --> USER
+  PAGES --> USER
+```
+
+重點：**所有重活都在 Cloudflare 免費方案內完成**——台灣 placement 的 `mpb-fetcher`／`pla-intel` 才讀得到航港局與國防部；主 Worker 以 Durable Object 合併船舶、地震與 PLA 資料，並由 cron watchdog 在資料過期時自動重跑；aisstream 會拒絕 Cloudflare IP，所以由 GitHub Actions 收集（GitHub 的排程不穩，介面會顯示資料新舊度並誠實標示）。
+
 ## 技術堆疊
 
 * 前端：JavaScript、React 18、three.js（3D 地球與自訂 shader）、手寫的行動優先 CSS、satellite.js 6.0.2（SGP4）

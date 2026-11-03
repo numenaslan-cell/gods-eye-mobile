@@ -226,3 +226,11 @@ small { font-size: 9px; }
 .ge-news { margin: 0; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.8); } .ge-news b { display: block; color: var(--lime); font-size: 12.5px; letter-spacing: .02em; }
 .ge-shipnotice { position: absolute; left: 12px; top: calc(var(--sat) + 150px); width: calc(100% - 86px); max-width: 420px; padding: 8px 12px; background: rgba(40,24,0,.94); border: 1px solid var(--amber); color: var(--amber); z-index: 6; pointer-events: none; display: flex; flex-direction: column; gap: 2px; }
 .ge-shipnotice b { font-size: 11px; letter-spacing: .06em; } .ge-shipnotice small { font-size: 11px; color: rgba(255,255,255,.85); line-height: 1.4; }
+
+/* data freshness + identification confidence */
+.ge-fresh { font-size: 10px; } .ge-fresh.is-stale { font-weight: 700; }
+.ge-conf { display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 9px; font-weight: 800; letter-spacing: .04em; line-height: 15px; vertical-align: 1px; border: 1px solid currentColor; white-space: nowrap; }
+.ge-conf-sure { color: #3dff9a; background: rgba(61,255,154,.12); } .ge-conf-high { color: #ffd23d; background: rgba(255,210,61,.12); } .ge-conf-guess { color: #ff8a80; background: rgba(255,138,128,.12); }
+.ge-conflegend { border-left: 2px solid rgba(255,255,255,.25); padding-left: 8px; line-height: 1.7; }
+.ge-arch { border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: 6px 8px; } .ge-arch summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--cyan, #2ee6ff); }
+.ge-arch-scroll { overflow-x: auto; margin-top: 6px; -webkit-overflow-scrolling: touch; } .ge-arch-scroll img { display: block; max-width: none; height: auto; border-radius: 6px; }

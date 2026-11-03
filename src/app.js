@@ -276,6 +276,10 @@
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["🕒 資料新鮮度　", "船舶、地震、PLA 面板顯示「資料更新於 N 分鐘前」；船位超過 10 分鐘未更新會轉為琥珀色提醒。（2026-11-03）"],
+    ["🎯 辨識信心標示　", "疑似海警／共軍／共機加上「確認／高信心／推測」：官方國防部與日本統合幕僚監部資料為確認；MMSI 413875、ICAO 0x7A1000–0x7A4FFF、政府船舶推論為推測。附圖例說明。"],
+    ["⏱️ 備援收集器更穩定　", "GitHub 排程常延遲 40–75 分鐘；Worker 的 Cloudflare cron 現可在收集器逾時 10 分鐘時主動觸發（需設定專用 token），並在介面顯示 aisstream 補充資料的新舊。"],
+    ["🗺️ 系統架構圖　", "README、PORTFOLIO 與本頁「關於」加入資料來源 → Worker → Pages → 推播的架構圖。"],
     ["🚢 航港局船位不再依賴本機　", "由台灣區域的 Cloudflare Worker 每 5 分鐘抓取交通部航港局 MPB，不需要任何本機常駐。"],
     ["🪖 國防部每日通報 + 公務船　", "解放軍機艦每日架次、艦艇與「公務船」數量與地圖連結，顯示在 PLA 分頁。"],
     ["🇯🇵 日本統合幕僚監部　", "收錄日方公布的中國艦艇舷號與艦名、機種與海峽動向（PDL 1.0）。"],
@@ -324,6 +328,33 @@
       pieces.map(function (pc, i) { return h("polygon", { key: i, points: pc.pts.map(function (q) { return q[0] + "," + (-q[1]); }).join(" "), fill: p.color, fillOpacity: pc.fill < 1 ? 0.45 : 1, stroke: "#02060a", strokeWidth: 0.07, strokeLinejoin: "round", paintOrder: "stroke" }); }));
   }
   var WARN_TAGS = { ccg: "⚠️ 疑似海警", plan: "⚠️ 疑似共軍", air: "⚠️ 疑似共機" };
+  /* ---- identification confidence: 確認 (official MND / Japan Joint Staff data) · 高信心 (several independent signals agree) · 推測 (one rule only: MMSI 413875 block, ICAO 0x7A1000-0x7A4FFF block, gov't-vessel inference) ---- */
+  var CONF = { sure: "確認", high: "高信心", guess: "推測" };
+  function shipConf(sh) {
+    if (sh.ccg) return sh.ccgBy === "name" || sh.ccgBy === "known" ? "high" : "guess"; // name matches a CCG hull pattern (or was seen earlier) vs MMSI 413875xxx block only
+    if (sh.plan) return /PLA ?NAVY|PLAN[ -]?\d|海軍|海军|解放軍|解放军/i.test(sh.name || "") ? "high" : "guess"; // PLA-Navy name vs MMSI 412/413 + type 35 only
+    return "guess"; // 政府船舶 (AIS type 55 under a Chinese MMSI) is an inference
+  }
+  function airConf(fl) {
+    var n = (fl.plaWhy || []).filter(function (w) { return w === "mil" || w === "cn-hex" || w === "type" || w === "callsign"; }).length;
+    return n >= 2 ? "high" : "guess"; // ≥ 2 independent signals vs only the 0x7A1000-0x7A4FFF hex-block prior (or one weak signal)
+  }
+  function confBadge(c, key) { return h("span", { key: key, className: "ge-conf ge-conf-" + c, title: "辨識信心 · identification confidence" }, CONF[c]); }
+  function confNote(key) {
+    return h("p", { key: key || "confleg", className: "ge-note ge-conflegend" },
+      h("b", null, "信心標示　"), confBadge("sure", "a"), " 官方公布資料（國防部 MND／日本統合幕僚監部）· ", confBadge("high", "b"), " 多項獨立訊號相符（如名稱含 CCG／海警；軍籍旗標＋中國 ICAO 位址＋機型）· ", confBadge("guess", "c"),
+      " 僅憑單一規則（MMSI 413875 號段、ICAO 0x7A1000–0x7A4FFF 位址段、政府船舶／55 類推論）。除「確認」外皆為推測，非官方認定。");
+  }
+  /* ---- data freshness: "資料更新於 N 分鐘前", amber past staleMin ---- */
+  function freshText(ts) {
+    var min = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+    return min < 1 ? "不到 1 分鐘前" : min >= 120 ? Math.round(min / 60) + " 小時前" : min + " 分鐘前";
+  }
+  function freshLine(key, ts, staleMin, what) {
+    if (!ts) return null;
+    var stale = Date.now() - ts > staleMin * 60000;
+    return h("p", { key: key, className: "ge-note ge-fresh" + (stale ? " ge-warn is-stale" : "") }, (stale ? "⚠ " : "🕒 ") + "資料更新於 " + freshText(ts) + (what ? "（" + what + "）" : "") + (stale ? " · 可能已過時" : ""));
+  }
   var CCG_WHY = { name: "the AIS name matches a China Coast Guard hull pattern", block: "the MMSI is in 413875xxx, a range where CCG ships have been seen transmitting (observed pattern, not an official allocation)", known: "this MMSI was earlier seen broadcasting a CCG name" };
   var DIR_EN = { N: "north", S: "south", E: "east", W: "west", NE: "north-east", NW: "north-west", SE: "south-east", SW: "south-west" };
   function ccgNote(sh) {
@@ -940,32 +971,32 @@
       // always-visible warning tags (HTML overlay above the canvas): pulsing ring + "⚠️ 疑似海警 / 疑似共軍 / 疑似共機" label
       var warnLayer = document.createElement("div"); warnLayer.className = "ge-warnlayer"; warnLayer.setAttribute("aria-hidden", "true"); canvas.parentNode.insertBefore(warnLayer, canvas.nextSibling); // above the globe, below the HUD panels
       var warnEls = {}, tmpWv = new T.Vector3();
-      function warnTag(key, kind, name) {
+      function warnTag(key, kind, name, conf) {
         var el = warnEls[key];
         if (!el) {
           el = warnEls[key] = document.createElement("div"); el.className = "ge-wtag ge-wtag-" + kind;
           el.innerHTML = '<i class="ge-wring"></i><i class="ge-wring ge-wring2"></i><span class="ge-wlab"></span><small class="ge-wname"></small>';
-          el.children[2].textContent = WARN_TAGS[kind]; el.children[3].textContent = name || ""; warnLayer.appendChild(el);
+          el.children[2].textContent = WARN_TAGS[kind] + (conf ? " · " + CONF[conf] : ""); el.children[3].textContent = name || ""; warnLayer.appendChild(el);
         }
         return el;
       }
       function updateWarnTags(lay, camLen) {
         var used = {}, W = root.clientWidth, H = root.clientHeight, camN2 = camera.position.clone().normalize(), cands = [];
-        function add(kind, id, mesh, name) {
+        function add(kind, id, mesh, name, conf) {
           tmpWv.copy(mesh.position); var up = tmpWv.clone().normalize();
           if (up.dot(camN2) <= 1 / camLen - 0.02) return;
           var pr = tmpWv.project(camera); if (pr.z >= 1 || Math.abs(pr.x) > 1.08 || Math.abs(pr.y) > 1.08) return;
-          cands.push({ key: kind + ":" + id, kind: kind, name: name, x: (pr.x * 0.5 + 0.5) * W, y: (-pr.y * 0.5 + 0.5) * H, d: pr.x * pr.x + pr.y * pr.y });
+          cands.push({ key: kind + ":" + id, kind: kind, name: name, conf: conf, x: (pr.x * 0.5 + 0.5) * W, y: (-pr.y * 0.5 + 0.5) * H, d: pr.x * pr.x + pr.y * pr.y });
         }
-        if (lay.ships) warnShipIds.forEach(function (id) { var e = shipMeshes[id]; if (e) add(e.sh.plan ? "plan" : "ccg", id, e.mesh, e.sh.name); });
-        if (lay.flights) warnFlightIds.forEach(function (id) { var e = meshes[id]; if (e) add("air", id, e.mesh, e.fl.callsign); });
+        if (lay.ships) warnShipIds.forEach(function (id) { var e = shipMeshes[id]; if (e) add(e.sh.plan ? "plan" : "ccg", id, e.mesh, e.sh.name, shipConf(e.sh)); });
+        if (lay.flights) warnFlightIds.forEach(function (id) { var e = meshes[id]; if (e) add("air", id, e.mesh, e.fl.callsign, airConf(e.fl)); });
         var PRI = { plan: 0, ccg: 1, air: 2 };
         cands.sort(function (a, b) { return PRI[a.kind] - PRI[b.kind] || a.d - b.d; });
         var placed = [], showName = camLen < 1.8;
         cands.slice(0, 16).forEach(function (c, i) {
-          var el = warnTag(c.key, c.kind, c.name); used[c.key] = 1;
+          var el = warnTag(c.key, c.kind, c.name, c.conf); used[c.key] = 1;
           // stack overlapping labels upwards (each label ≈ 100 x 20 px, drawn 24 px above its ring); hide the label (keep the ring) if no free slot
-          var lift = -1, w = 108, hgt = 29;
+          var lift = -1, w = 132, hgt = 29;
           for (var k2 = 0; k2 < 6 && lift < 0; k2++) {
             var bx0 = c.x - w / 2, by0 = c.y - 24 - hgt - k2 * (hgt + 2), ok = true;
             for (var q = 0; q < placed.length; q++) { var pb = placed[q]; if (bx0 < pb[2] && bx0 + w > pb[0] && by0 < pb[3] && by0 + hgt > pb[1]) { ok = false; break; } }
@@ -1183,20 +1214,21 @@
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous aircraft", onClick: function () { cycle(-1); } }, "‹"),
             h("div", { className: "ge-pick-mid" },
               h("b", { className: "ge-cs", style: selected.pla ? { color: "#ff3b30" } : null }, (selected.pla ? "⚠️ " : "") + selected.callsign),
-              h("small", null, (selIdx + 1) + " / " + list.length + (selected.country ? " · " + selected.country : "") + (selected.type ? " · " + selected.type : "") + (selected.pla ? " · ⚠️ 疑似共機" : ""))),
+              h("small", null, (selIdx + 1) + " / " + list.length + (selected.country ? " · " + selected.country : "") + (selected.type ? " · " + selected.type : "") + (selected.pla ? " · ⚠️ 疑似共機 · " + CONF[airConf(selected)] : ""))),
             h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Next aircraft", onClick: function () { cycle(1); } }, "›")),
           h("dl", { className: "ge-grid", key: "grid" },
             [["ALT", selected.altFt != null ? fmtN(selected.altFt) + " ft" : "--"],
              ["SPD", selected.speedKt != null ? fmtN(selected.speedKt) + " kt" : "--"],
              ["HDG", Math.round(selected.hdg) + "°"],
              ["V/S", selected.vrFpm != null ? fmtN(selected.vrFpm) + " fpm" : "--"]].map(function (kv) { return row(kv[0], kv[1]); })),
-          selected.pla ? h("p", { key: "plan", className: "ge-note ge-warn" }, "⚠️ 疑似 PLA aircraft — heuristic: " + (selected.plaWhy || []).map(function (w) { return { mil: "ADS-B database marks it military", "cn-hex": "Chinese ICAO address block", type: "PLA-type airframe", callsign: "PLA-style callsign", "pla-block": "ICAO address inside 0x7A1000–0x7A4FFF, a block almost entirely military airframes (Y-20, WZ-10, Mi-8, Tu-16 …)" }[w] || w; }).join(" + ") + ". Not an official identification; most PLA aircraft do not broadcast ADS-B — the MND daily count (PLA tab) is the authoritative number.") : null,
+          selected.pla ? h("p", { key: "plan", className: "ge-note ge-warn" }, confBadge(airConf(selected), "cb"), " ⚠️ 疑似 PLA aircraft — heuristic: " + (selected.plaWhy || []).map(function (w) { return { mil: "ADS-B database marks it military", "cn-hex": "Chinese ICAO address block", type: "PLA-type airframe", callsign: "PLA-style callsign", "pla-block": "ICAO address inside 0x7A1000–0x7A4FFF, a block almost entirely military airframes (Y-20, WZ-10, Mi-8, Tu-16 …)" }[w] || w; }).join(" + ") + ". Not an official identification; most PLA aircraft do not broadcast ADS-B — the MND daily count (PLA tab) is the authoritative number.") : null,
           h("button", { key: "follow", type: "button", className: cx("ge-btn", "ge-wide", follow && "is-on"), "aria-pressed": follow, onClick: toggleFollow }, follow ? "● FOLLOWING" : "FOLLOW AIRCRAFT"),
         ] : h("p", { key: "n", className: "ge-note" }, flights.status === "loading" ? "Contacting flight feeds…" : "NO AIRCRAFT IN RANGE"),
         h("div", { key: "legend", className: "ge-legend" },
           h("span", null, h(ShapeIcon, { kind: "plane", color: "#ffffff", size: 15 }), "AIRCRAFT (nose = heading)"),
           h("span", null, h(ShapeIcon, { kind: "plane", color: "#ff3b30", size: 15 }), "⚠️ 疑似共機"),
           h("span", null, h(ShapeIcon, { kind: "hull", color: "#9aa7b0", size: 15 }), "SHIP (bow = course)")),
+        plaAir.length || (selected && selected.pla) ? confNote("fconf") : null,
         h("p", { key: "s", className: "ge-src" }, "ADS-B via " + (flights.source || "adsb.lol") + " · adsb.lol data © adsb.lol contributors, ODbL 1.0 · fallback adsb.fi (non-commercial) / OpenSky · updated " + ago(flights.updated) + " ago"),
       ];
     }
@@ -1204,6 +1236,11 @@
     function shipsBody() {
       var bits = [];
       if (ships.unavailable) bits.push(h("p", { key: "un", className: "ge-note ge-warn" }, "⚠ 船舶資料暫時無法使用（" + (ships.unavailable === "stale" ? "MPB 約 " + ships.unavailableAge + " 分鐘未更新" : ships.unavailable === "empty" ? "目前沒有船位" : "連線失敗") + "）· Ship data temporarily unavailable — retrying automatically."));
+      if (ships.status === "live") {
+        bits.push(freshLine("fr", ships.mpbAt || ships.dataAt, 10, ships.mpbAt ? "交通部航港局 MPB" : "AIS"));
+        // aisstream + CWA backup come from a GitHub Actions collector whose cron really runs every ~40-75 min (see README) -> shown separately, never blocks the main MPB data
+        bits.push(ships.aisAt ? freshLine("fra", ships.aisAt, 60, "aisstream 補充來源 · GitHub 排程不穩，延遲屬正常") : h("p", { key: "fra", className: "ge-src" }, "aisstream 補充來源：目前沒有資料（GitHub 排程不穩；不影響航港局主資料）"));
+      }
       if (ships.status === "demo") bits.push(h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — no live AIS (" + (ships.error || "?") + "). Demo ships follow real shipping lanes; retrying…"));
       if (ships.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, ships.note || "Contacting AIS relay…"));
       bits.push(h("div", { key: "cnt", className: "ge-iss" },
@@ -1216,14 +1253,14 @@
           h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous ship", onClick: function () { cycleShip(-1); } }, "‹"),
           h("div", { className: "ge-pick-mid" },
             h("b", { className: "ge-cs", style: { color: SHIP_CSS[selShip.cls] } }, selShip.name),
-            h("small", null, "MMSI " + selShip.mmsi + " · " + selShip.typeLabel)),
+            h("small", null, "MMSI " + selShip.mmsi + " · " + selShip.typeLabel + (selShip.ccg || selShip.plan || selShip.gov ? " · " + CONF[shipConf(selShip)] : ""))),
           h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Next ship", onClick: function () { cycleShip(1); } }, "›")));
         bits.push(h("dl", { className: "ge-grid", key: "grid" },
           [["SPD", selShip.sogKt != null ? selShip.sogKt.toFixed(1) + " kn" : "--"],
            ["CRS", selShip.cog != null ? Math.round(selShip.cog) + "°" : selShip.hdg ? Math.round(selShip.hdg) + "°" : "--"],
            ["DEST", selShip.dest || "--"],
            ["AGE", ago(selShip.t)]].map(function (kv) { return row(kv[0], kv[1]); })));
-        bits.push(h("p", { key: "pos", className: "ge-note" }, fmtLL(selShip.lat, selShip.lon) + (selShip.ccg ? " · " + ccgNote(selShip) : selShip.gov ? " · 政府船舶 gov't vessel: AIS type 55 (law enforcement) under a Chinese MMSI. Could be coast guard, maritime-safety, fisheries-patrol or customs — unverified, not labelled 海警." : selShip.plan ? " · ⚠️ 疑似共軍: PLA Navy guess from AIS name / MMSI 412·413 + type 35 — not an official identification; most PLA ships do not transmit AIS" : "")));
+        bits.push(h("p", { key: "pos", className: "ge-note" }, selShip.ccg || selShip.plan || selShip.gov ? confBadge(shipConf(selShip), "cb") : null, " " + fmtLL(selShip.lat, selShip.lon) + (selShip.ccg ? " · " + ccgNote(selShip) : selShip.gov ? " · 政府船舶 gov't vessel: AIS type 55 (law enforcement) under a Chinese MMSI. Could be coast guard, maritime-safety, fisheries-patrol or customs — unverified, not labelled 海警." : selShip.plan ? " · ⚠️ 疑似共軍: PLA Navy guess from AIS name / MMSI 412·413 + type 35 — not an official identification; most PLA ships do not transmit AIS" : "")));
         bits.push(h("button", { key: "follow", type: "button", className: cx("ge-btn", "ge-wide", sFollow && "is-on"), "aria-pressed": sFollow, onClick: toggleShipFollow }, sFollow ? "● FOLLOWING" : "FOLLOW SHIP"));
       } else {
         bits.push(h("div", { className: "ge-pick", key: "pick0" },
@@ -1233,9 +1270,10 @@
       }
       bits.push(h("div", { key: "legend", className: "ge-legend" },
         h("span", null, h(ShapeIcon, { kind: "plane", color: "#ffffff", size: 15 }), "AIRCRAFT"),
-        [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["fish", "FISHING"], ["other", "OTHER"], ["ccg", "疑似海警"], ["plan", "疑似共軍"], ["gov", "政府船舶"]].map(function (c) {
+        [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["fish", "FISHING"], ["other", "OTHER"], ["ccg", "疑似海警"], ["plan", "疑似共軍"], ["gov", "政府船舶（推測）"]].map(function (c) {
           return h("span", { key: c[0] }, h(ShapeIcon, { kind: "hull", color: SHIP_CSS[c[0]], size: 15 }), c[1]);
         })));
+      if (ccgList.length || planList.length || sList.some(function (x) { return x.gov; })) bits.push(confNote("sconf"));
       bits.push(h("p", { key: "src", className: "ge-src" }, "AIS: aisstream.io + 交通部航港局 (MPB) 臺灣海域船舶即時資訊, merged by MMSI via own Worker · updated " + ago(ships.updated) + " ago · not for navigation · 疑似海警 / 疑似共軍 flags are name / type / MMSI heuristics, not identifications; 政府船舶 = AIS type 55 only, unverified"));
       return bits;
     }
@@ -1248,7 +1286,8 @@
       if (intel.status === "error") bits.push(h("p", { key: "ie", className: "ge-note ge-warn" }, "MND / Joint Staff feed unavailable (" + (intel.error || "?") + "). Retrying…"));
       if (O) {
         var omax = Math.max.apply(null, offDays.map(function (d) { return d.aircraft || 0; }).concat([1]));
-        bits.push(h("div", { key: "od", className: "ge-pla-date" }, h("b", null, "國防部 MND DAILY · OFFICIAL"), h("small", null, O.date + " · 06:00→06:00 (UTC+8)")));
+        bits.push(h("div", { key: "od", className: "ge-pla-date" }, h("b", null, "國防部 MND DAILY · OFFICIAL ", confBadge("sure", "cs")), h("small", null, O.date + " · 06:00→06:00 (UTC+8)")));
+        bits.push(freshLine("mfr", intel.mndAt, 60, "最後抓取；國防部每日通報一天一則"));
         bits.push(h("dl", { key: "on", className: "ge-grid ge-pla-nums ge-pla-nums4" },
           [["AIRCRAFT", fmtN(O.aircraft)], ["IN SW/E ADIZ", fmtN(O.aircraft === 0 ? 0 : O.adiz)], ["PLAN SHIPS", fmtN(O.plan)], ["公務船 OFFICIAL", fmtN(O.official)]].map(function (kv) { return row(kv[0], kv[1]); })));
         bits.push(h("div", { key: "osp", className: "ge-spark", role: "img", "aria-label": "MND aircraft per day: " + offDays.map(function (d) { return d.aircraft; }).join(", ") },
@@ -1261,7 +1300,8 @@
         bits.push(h("p", { key: "osrc", className: "ge-src" }, "Source: 中華民國國防部 (mnd.gov.tw) daily 「中共解放軍臺海周邊海、空域動態」, relayed unchanged via own Worker · fetched " + (intel.mndAt ? ago(intel.mndAt) + " ago" : "—") + "."));
       }
       if (intel.js && intel.js.length) {
-        bits.push(h("div", { key: "jd", className: "ge-pla-date ge-pla-sep" }, h("b", null, "🇯🇵 JOINT STAFF · PLA NEAR JAPAN"), h("small", null, "統合幕僚監部 · " + intel.js.length + " releases")));
+        bits.push(h("div", { key: "jd", className: "ge-pla-date ge-pla-sep" }, h("b", null, "🇯🇵 JOINT STAFF · PLA NEAR JAPAN ", confBadge("sure", "cs")), h("small", null, "統合幕僚監部 · " + intel.js.length + " releases")));
+        bits.push(freshLine("jfr", intel.jsAt, 90, "最後抓取"));
         bits.push(h("ul", { key: "ju", className: "ge-list ge-passes ge-cga" }, intel.js.slice(0, 12).map(function (ev) {
           var L = jsLine(ev);
           return h("li", { key: ev.id }, h("a", { className: "ge-li ge-pass", href: ev.pdf, target: "_blank", rel: "noopener noreferrer" },
@@ -1288,8 +1328,9 @@
       else if (pla.status === "error" && !O) bits.push(h("p", { key: "pe", className: "ge-note ge-warn" }, "PLA daily data unavailable (" + (pla.error || "?") + "). Retrying…"));
       bits.push(h("p", { key: "au", className: "ge-note ge-plaauth" }, "The 國防部 (MND) daily count is the authoritative number. Most PLA aircraft and ships do NOT broadcast ADS-B / AIS, so the live map only ever shows a small, partial subset — the red ⚠️ PLA markers are 疑似 (suspected) guesses, never a count."));
       bits.push(h("div", { key: "pw", className: "ge-iss ge-plawarn" },
-        h("div", null, h("b", null, "⚠️ " + plaAir.length + " 疑似 PLA ON ADS-B NOW"), h("small", null, "heuristic: military flag + Chinese ICAO block / type / callsign")),
+        h("div", null, h("b", null, "⚠️ " + plaAir.length + " 疑似 PLA ON ADS-B NOW"), h("small", null, "heuristic: military flag + Chinese ICAO block / type / callsign" + (plaAir.length ? " · 高信心 " + plaAir.filter(function (x) { return airConf(x) === "high"; }).length + " · 推測 " + plaAir.filter(function (x) { return airConf(x) !== "high"; }).length : ""))),
         plaAir.length ? h("button", { type: "button", className: "ge-btn ge-small ge-ccg", onClick: function () { cyclePla(); } }, "SHOW") : null));
+      bits.push(confNote("pconf"));
       bits.push(h("p", { key: "ps", className: "ge-src" }, "Trend line: third-party compilation (pla-tracker.skyfaring.net) of MND reports — unofficial, may lag or contain errors; not a warning."));
       bits.push(h("div", { key: "cg", className: "ge-pla-date ge-pla-sep" }, h("b", null, "CCG 海警 · CGA RELEASES"), h("small", null, cga.scanned ? "latest " + cga.scanned + " items" : "")));
       if (cga.status === "loading") bits.push(h("p", { key: "cl", className: "ge-note" }, "Loading 海巡署 RSS…"));
@@ -1377,6 +1418,7 @@
         h("small", null, new Date(selQ.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " (local) · " + quakeAgo(selQ.t) + " · depth " + (selQ.depthKm != null ? Math.round(selQ.depthKm) + " km" : "--") + " · " + fmtLL(selQ.lat, selQ.lon)),
         selQ.url && !selQ.demo ? h("a", { href: selQ.url, target: "_blank", rel: "noopener noreferrer" }, selQ.src === "CWA" ? "CWA 地震報告 ↗" : selQ.src === "EMSC" ? "EMSC EVENT PAGE ↗" : selQ.src === "GFZ" ? "GFZ EVENT PAGE ↗" : "USGS EVENT PAGE ↗") : null,
         h("small", null, "來源 SOURCE: " + srcLabel(selQ) + (srcMags(selQ) ? " · " + srcMags(selQ) : "") + (selQ.src === "CWA" ? " · 以氣象署為準" : ""))));
+      if (quakes.status === "live") bits.push(freshLine("fr", quakes.liveUpdated || quakes.updated, 10, quakes.sources && quakes.sources.CWA && quakes.sources.CWA.okAt ? "CWA + USGS + EMSC + GFZ" : quakes.source));
       var cwa = Data.state.cwa;
       if (cwa && cwa.enabled) {
         cwa.warnings.slice(0, 6).forEach(function (w, i) {
@@ -1402,6 +1444,11 @@
     function newsBody() {
       var bits = [h("p", { key: "h", className: "ge-note" }, "最近更新 · 2026-11-03（台北時間）")];
       NEWS.forEach(function (n, i) { bits.push(h("p", { key: "n" + i, className: "ge-news" }, h("b", null, n[0]), n[1])); });
+      bits.push(h("details", { key: "arch", className: "ge-arch" },
+        h("summary", null, "🗺️ 系統架構圖 · Architecture"),
+        h("div", { className: "ge-arch-scroll" }, h("img", { src: "docs/architecture.png", alt: "系統架構圖：資料來源 → Cloudflare Workers（mpb-fetcher、pla-intel、proxy + Durable Object + cron watchdog）→ GitHub Pages 與 Web Push；GitHub Actions 負責 aisstream 與 CWA 備援", loading: "lazy", width: 1000 })),
+        h("p", { className: "ge-src" }, "左右滑動查看全圖 · ", h("a", { className: "ge-link", href: "docs/architecture.png", target: "_blank", rel: "noopener noreferrer" }, "開啟原圖 ↗"))));
+      bits.push(confNote("nconf"));
       bits.push(h("p", { key: "s", className: "ge-src" }, "⚠ 軍艦、海警、軍機標示皆為依公開資料與規則推測的啟發式判斷，非官方認定。完整說明見 GitHub README 與 docs/DATA-SOURCES.md。"));
       return bits;
     }

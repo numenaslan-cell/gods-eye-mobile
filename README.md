@@ -20,6 +20,8 @@
 * 🌏 **地震圖層 + QUAKES 面板（多來源即時合併）**：中央氣象署（含小規模有感地震，最權威）＋ USGS ＋ EMSC ＋ GFZ，Worker 每 2 分鐘抓取並依「時間 ±150 秒、位置 ±1.5°」去重，同一事件以氣象署為準，**每筆標示來源**（如 CWA·USGS·EMSC，並列各機構規模）；近 30 天 M3.0+、依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點／來源，點選會飛到震央。颱風與警特報同樣由氣象署公開資料取得
 * 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料來源為 aisstream.io 與交通部航港局（MPB）臺灣海域 AIS，由收集器低頻率取得並經自己的 Cloudflare Worker 以 MMSI 合併（API key 只存在 Worker secret）；CCG 標記為名稱／船型啟發式（排除漁船型別 30 的純 MMSI 前綴比對），沒有 key 或失敗時顯示 **DEMO DATA**
 * 🛰️ **過境預測 (Passes)**：用瀏覽器定位（預設台北，也可手動輸入經緯度）預測未來 72 小時 ISS、天宮 (CSS) 與數顆亮星（HST、AJISAI、TERRA、AQUA、ENVISAT、ALOS）的過境：起／峰／止時間、最高仰角、起訖方位、是否「可能看得到」（衛星受日照且天色夠暗）；「LOOK HERE」羅盤會指出現在該看的方位與仰角，可選用手機羅盤；頁面開著時可在過境前 5 分鐘通知
+* 🕒 **資料新鮮度**：船舶（交通部航港局）、地震、PLA 面板顯示「資料更新於 N 分鐘前」；船位超過 10 分鐘（地震 10 分、PLA 抓取 60–90 分）轉為琥珀色。aisstream 補充來源另列一行（GitHub Actions 排程不穩，延遲屬正常，不影響主資料）。
+* 🎯 **辨識信心**：疑似海警／共軍艦／共機標示「**確認**（國防部／日本統合幕僚監部官方資料）／**高信心**（多項獨立訊號）／**推測**（僅單一規則：MMSI 413875、ICAO 0x7A1000–0x7A4FFF、政府船舶推論）」，並附圖例。
 * 🛡️ **PLA 分頁**：**國防部（MND）每日「中共解放軍臺海周邊海、空域動態」官方數字**（共機架次、進入西南／東部空域架次、共艦、**公務船**，附航跡示意圖連結與近 7 日長條圖；由放在台灣的 `pla-intel` Worker 抓取，Worker `/api/pla`）＋ **日本防衛省統合幕僚監部**發布的中國軍艦／軍機動向（級別、艦號→艦名、海峽與航向、機型；PDL 1.0，標示出典與「加工」）＋ 第三方 7 日趨勢 ＋ 海巡署新聞中提到「海警」的項目（Worker `/api/cga`，30 分鐘快取）。分頁明確標示：**國防部（MND）每日公布的架次／艦數才是權威數字**，地圖上的疑似標記只是少數有發送 ADS-B／AIS 的子集，不是計數
 * ⚠️ **疑似警示標籤（啟發式，非辨識）**：疑似海警船「⚠️ 疑似海警」、疑似解放軍海軍艦「⚠️ 疑似共軍」（名稱含 海軍／PLA NAVY／PLAN＋艦號，或 MMSI 412/413 且船型 35；漁船不會只靠 MMSI 被標記）、疑似共機「⚠️ 疑似共機」（adsb.lol/adsb.fi 軍用旗標＋中國 ICAO 位址區段／PLA 機型（含 TU16＝轟-6）或呼號；ICAO 位址落在 0x7A1000–0x7A4FFF 這段幾乎全是軍機的區段也會標；單靠一般中國位址不標記）。海警判斷增加：MMSI 413875xxx 區段、曾以海警船名出現過的 MMSI（KV 記憶）、船名內的艦號→所屬分局（如 14530→福建）；只有「船型 55」而無其他證據的船改標為較保守的「政府船舶」（例如 XIA MEN HAI YANG 01），不再稱海警。標籤永遠顯示並有脈動圈；多數共機／共艦不發 ADS-B／AIS，這些標記只是提示
 * 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（多來源去重，同一地震只推一次）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關
@@ -28,6 +30,76 @@
 * 📱 手機優先：375–430 px 直式不會橫向捲動、所有按鈕 ≥ 44 px、HUD 面板可收合（手機上一次只展開一個）、支援瀏海／Home 指示條 safe-area
 * 📲 PWA：`manifest.json`、`theme-color`、`apple-mobile-web-app-*`、圖示，可「加入主畫面」；Service Worker 只快取靜態檔，資料 API 一律走網路
 * 🧯 容錯：CORS 被擋、網路錯誤、逾時、HTTP 429 都會優雅降級（徽章 + 說明 + 退避重試），衛星 TLE 本地快取 2 小時
+
+## 系統架構 Architecture
+
+資料來源（MPB、aisstream、CWA S3、USGS/EMSC/GFZ、國防部 MND、日本統合幕僚監部、adsb.lol、CelesTrak、NASA）→ Cloudflare Workers（`mpb-fetcher`、`pla-intel`、`gods-eye-opensky-proxy` ＋ Durable Object ＋ cron watchdog）→ GitHub Pages 手機 PWA，並由 Worker 發送 Web Push。GitHub Actions 負責 aisstream（會拒絕 Cloudflare IP）與 CWA REST 備援、Joint Staff PDF 艦號。
+
+![系統架構圖](docs/architecture.png)
+
+<details><summary>Mermaid 原始碼（GitHub 會直接渲染）</summary>
+
+```mermaid
+flowchart TB
+  subgraph SRC["① 資料來源 Sources"]
+    direction LR
+    MPB["交通部航港局 MPB<br/>AIS ~7,000 艘"]
+    AIS["aisstream.io<br/>AIS WebSocket"]
+    CWA["CWA S3 mirror<br/>(+ CWA REST 備援)"]
+    QK["USGS · EMSC · GFZ<br/>地震"]
+    MND["國防部 MND<br/>每日通報"]
+    JS["日本統合幕僚監部"]
+    ADSB["adsb.lol / adsb.fi<br/>OpenSky 航班"]
+    CEL["CelesTrak<br/>衛星 TLE"]
+    NASA["NASA GIBS<br/>Blue Marble"]
+  end
+
+  subgraph CF["② Cloudflare Workers（免費方案）"]
+    direction LR
+    MF["mpb-fetcher<br/>台灣 placement · cron 5 分"]
+    PI["pla-intel<br/>台灣 placement"]
+    subgraph PX["gods-eye-opensky-proxy"]
+      direction TB
+      API["路由 /api/ships · quakes/live<br/>pla · health · push"]
+      HUB[("Durable Object Hub<br/>船舶 · 地震 · PLA 狀態")]
+      CRON["cron 2 分 + watchdog"]
+      KV[("KV 推播訂閱")]
+    end
+  end
+
+  GHA["③ GitHub Actions<br/>collector.yml: aisstream + CWA 備援<br/>pla-intel.yml: PDF 艦號"]
+  PAGES["④ GitHub Pages<br/>手機 PWA · React + three.js"]
+  PUSH["⑤ Web Push<br/>FCM / Mozilla / Apple"]
+  USER(("手機使用者"))
+
+  MPB --> MF
+  MND --> PI
+  JS --> PI
+  QK --> HUB
+  CWA --> HUB
+  CEL -->|"ISS TLE"| HUB
+  AIS --> GHA
+  CWA -.->|"REST"| GHA
+  ADSB --> API
+  MF -->|"service binding"| API
+  PI -->|"service binding"| API
+  GHA -->|"POST ingest"| API
+  CRON -->|"逾時重跑 /run"| MF
+  CRON -.->|"workflow_dispatch<br/>需 GH_DISPATCH_TOKEN"| GHA
+  API <--> HUB
+  CRON --- HUB
+  HUB --- KV
+  API -->|"JSON + CORS"| PAGES
+  CEL -->|"TLE"| PAGES
+  NASA -->|"圖磚 / 貼圖"| PAGES
+  HUB -->|"地震 · 海警 · ISS"| PUSH
+  PUSH --> USER
+  PAGES --> USER
+```
+
+</details>
+
+> 圖檔：`docs/architecture.png` / `docs/architecture.svg`（手工排版，產生器見 `scripts/gen-architecture.py`）；Mermaid 原始檔 `docs/architecture.mmd`。同一張圖也在網站「更新內容」分頁裡。
 
 ## 如何執行
 

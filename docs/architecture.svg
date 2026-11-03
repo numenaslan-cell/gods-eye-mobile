@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1330 640" width="1330" height="640" font-family="Noto Sans CJK TC, Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5fb4e6"/></marker></defs>
+<rect width="1330" height="640" fill="#0b1620"/>
+<text x="20" y="26" font-size="17" font-weight="800" fill="#ffffff">God's Eye View — 系統架構 / Architecture</text>
+<text x="20" y="52" font-size="14" font-weight="700" fill="#7fd1ff">① 資料來源 Sources</text>
+<rect x="20" y="64" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="85.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">交通部航港局 MPB</text>
+<text x="125.0" y="102.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">AIS GeoJSON ~7,000 艘</text>
+<rect x="20" y="128" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="149.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">aisstream.io</text>
+<text x="125.0" y="166.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">AIS WebSocket</text>
+<rect x="20" y="192" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="213.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">CWA S3 mirror</text>
+<text x="125.0" y="230.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">地震 · 颱風 · 警特報</text>
+<rect x="20" y="256" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="277.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">USGS · EMSC · GFZ</text>
+<text x="125.0" y="294.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">地震 FDSN</text>
+<rect x="20" y="320" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="341.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">國防部 MND</text>
+<text x="125.0" y="358.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">每日共機共艦通報</text>
+<rect x="20" y="384" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="405.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">日本統合幕僚監部</text>
+<text x="125.0" y="422.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">Joint Staff 報道発表</text>
+<rect x="20" y="448" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="469.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">adsb.lol → adsb.fi</text>
+<text x="125.0" y="486.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">→ OpenSky 航班</text>
+<rect x="20" y="512" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="533.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">CelesTrak</text>
+<text x="125.0" y="550.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">衛星 TLE</text>
+<rect x="20" y="576" width="210" height="50" rx="8" fill="#14283a" stroke="#2c4a60" stroke-width="1.5"/>
+<text x="125.0" y="597.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">NASA GIBS</text>
+<text x="125.0" y="614.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">Blue Marble 圖磚 / 貼圖</text>
+<text x="290" y="52" font-size="14" font-weight="700" fill="#7fd1ff">② Cloudflare Workers（免費方案）· ③ GitHub Actions</text>
+<rect x="290" y="64" width="230" height="50" rx="8" fill="#1c3040" stroke="#f6821f" stroke-width="1.5"/>
+<text x="405.0" y="85.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">mpb-fetcher</text>
+<text x="405.0" y="102.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">台灣 placement · cron 5 分鐘</text>
+<rect x="290" y="120" width="230" height="76" rx="8" fill="#241f3a" stroke="#8b7bff" stroke-width="1.5"/>
+<text x="405.0" y="145.55" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">GitHub Actions</text>
+<text x="405.0" y="162.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">collector：aisstream + CWA 備援</text>
+<text x="405.0" y="179.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">pla-intel：Joint Staff PDF 艦號</text>
+<rect x="290" y="314" width="230" height="126" rx="8" fill="#1c3040" stroke="#f6821f" stroke-width="1.5"/>
+<text x="405.0" y="364.55" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">pla-intel</text>
+<text x="405.0" y="381.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">台灣 placement · 無公開路由</text>
+<text x="405.0" y="398.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">抓 MND 與 Joint Staff</text>
+<rect x="600" y="64" width="400" height="520" rx="12" fill="#0e1a24" stroke="#f6821f" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="614" y="86" font-size="14" font-weight="700" fill="#7fd1ff">gods-eye-opensky-proxy</text>
+<rect x="620" y="96" width="360" height="70" rx="8" fill="#1c3040" stroke="#f6821f" stroke-width="1.5"/>
+<text x="800.0" y="118.55" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">Worker 路由 API</text>
+<text x="800.0" y="135.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">/api/ships · /api/quakes/live</text>
+<text x="800.0" y="152.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">/api/pla · /api/health · /api/push</text>
+<rect x="620" y="196" width="360" height="84" rx="8" fill="#1c3040" stroke="#f6821f" stroke-width="1.5"/>
+<text x="800.0" y="225.55" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">Durable Object「Hub」(SQLite)</text>
+<text x="800.0" y="242.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">船舶合併 · 地震多來源合併去重</text>
+<text x="800.0" y="259.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">PLA 狀態 · 推播去重</text>
+<rect x="620" y="310" width="170" height="56" rx="8" fill="#1c3040" stroke="#f6821f" stroke-width="1.5"/>
+<text x="705.0" y="334.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">KV「SUBS」</text>
+<text x="705.0" y="351.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">推播訂閱</text>
+<rect x="810" y="310" width="170" height="56" rx="8" fill="#1c3040" stroke="#f6821f" stroke-width="1.5"/>
+<text x="895.0" y="334.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">Cache API</text>
+<text x="895.0" y="351.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">航班 10 秒快取</text>
+<rect x="620" y="396" width="360" height="112" rx="8" fill="#2a2418" stroke="#ffb020" stroke-width="1.5"/>
+<text x="800.0" y="431.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">Cron 每 2 分鐘 + watchdog</text>
+<text x="800.0" y="448.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">MPB 逾 7 分 → 呼叫 mpb-fetcher /run</text>
+<text x="800.0" y="465.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">收集器逾 10 分 → workflow_dispatch（需 token，選配）</text>
+<text x="800.0" y="482.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">地震 / PLA 輪詢 · 推播檢查 · ISS TLE</text>
+<text x="620" y="528" font-size="11" fill="#9fb7c8">watchdog 狀態與新舊度公開於 /api/health 與 /api/ships（mpbAgeSec · aisAgeSec）</text>
+<text x="1070" y="52" font-size="14" font-weight="700" fill="#7fd1ff">④ 前端 · ⑤ 通知</text>
+<rect x="1070" y="130" width="240" height="84" rx="8" fill="#14301f" stroke="#3dff9a" stroke-width="1.5"/>
+<text x="1190.0" y="159.55" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">GitHub Pages</text>
+<text x="1190.0" y="176.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">手機 PWA · React + three.js</text>
+<text x="1190.0" y="193.55" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">Service Worker（只快取靜態檔）</text>
+<rect x="1070" y="396" width="240" height="56" rx="8" fill="#14301f" stroke="#3dff9a" stroke-width="1.5"/>
+<text x="1190.0" y="420.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">Web Push</text>
+<text x="1190.0" y="437.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">FCM / Mozilla / Apple</text>
+<rect x="1070" y="270" width="240" height="56" rx="8" fill="#14301f" stroke="#3dff9a" stroke-width="1.5"/>
+<text x="1190.0" y="294.05" text-anchor="middle" font-size="13" font-weight="700" fill="#e6f1f8">手機使用者</text>
+<text x="1190.0" y="311.05" text-anchor="middle" font-size="11" font-weight="400" fill="#9fb7c8">390×844 · 可加入主畫面</text>
+<path d="M230,89 H290" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M230,153 H290" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M230,217 H560 V224 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="400" y="211" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">條件式 GET（cron）</text>
+<path d="M230,281 H540 V250 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="420" y="275" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">cron 抓取</text>
+<path d="M230,345 H290" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M230,409 H290" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M230,473 H570 V150 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="360" y="467" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">每次請求（Cache API）</text>
+<path d="M230,537 H585 V260 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="335" y="531" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">ISS TLE（cron）· 6 小時快取</text>
+<path d="M520,89 H575 V120 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="532" y="76" text-anchor="start" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">binding</text>
+<path d="M520,158 H590 V135 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="545" y="150" text-anchor="start" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">POST</text>
+<path d="M520,375 H600 V175 H620" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="528" y="364" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">service binding INTEL</text>
+<path d="M620,452 H560 V104 H520" fill="none" stroke="#ffb020" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#ah)"/>
+<text x="470" y="122" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">逾時重跑 /run</text>
+<path d="M620,436 H545 V180 H520" fill="none" stroke="#ffb020" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#ah)"/>
+<text x="470" y="198" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">workflow_dispatch</text>
+<path d="M800,166 V196" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M980,125 H1030 V160 H1070" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="1028" y="118" text-anchor="middle" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">JSON · CORS</text>
+<path d="M980,250 H1030 V424 H1070" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="1070" y="388" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">地震 · 海警 · ISS 推播</text>
+<path d="M1190,214 V270" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M1190,396 V326" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<path d="M230,545 H1050 V190 H1070" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="760" y="541" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">衛星 TLE（瀏覽器直連）</text>
+<path d="M230,601 H1060 V200 H1070" fill="none" stroke="#5fb4e6" stroke-width="1.8" marker-end="url(#ah)"/>
+<text x="760" y="595" font-size="11" fill="#ffd27f" stroke="#0b1620" stroke-width="3" paint-order="stroke">圖磚 / 貼圖（瀏覽器直連）</text>
+<text x="1070" y="520" font-size="11" fill="#9fb7c8">實線＝資料流 · 虛線＝watchdog / 觸發</text>
+<text x="1070" y="537" font-size="11" fill="#9fb7c8">aisstream 會拒絕 Cloudflare IP，</text>
+<text x="1070" y="554" font-size="11" fill="#9fb7c8">故改由 GitHub Actions 收集</text>
+</svg>

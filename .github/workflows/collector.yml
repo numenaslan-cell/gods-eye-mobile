@@ -1,12 +1,16 @@
 name: collector
 # Every ~5 min: (1) POST the placed Worker `mpb-fetcher` (Taiwan-placed Cloudflare Worker, see workers/mpb-fetcher/) which fetches Taiwan MPB AIS
 # (~7,000 ships; MPB is unreachable from GitHub runners) and ingests it into the main Worker; (2) scripts/collect-once.mjs with MPB=0 does CWA + ~60 s of aisstream.
-# GitHub cron is best-effort (runs can start several minutes late or be skipped under load). The run FAILS (red + e-mail from GitHub) when mpb-fetcher answers
+# GitHub cron is best-effort: measured 2026-11, "*/5" really starts every 40-75 min. What is NOT affected: MPB ships (mpb-fetcher has its own Cloudflare cron + the proxy watchdog) and CWA/USGS/EMSC/GFZ quakes (proxy cron, CWA S3 mirror).
+# What IS affected: the aisstream feed and the CWA REST backup. Mitigations: (1) the proxy's Cloudflare cron calls workflow_dispatch on this workflow when the collector has been silent for 10 min -- only active when the Worker secret GH_DISPATCH_TOKEN
+# (fine-grained PAT, repo numenaslan-cell/gods-eye-mobile, Actions: read & write) exists; (2) the UI shows how old the aisstream data is (/api/ships aisAgeSec) and never depends on it. Dispatch is throttled to 1 per 15 min. The run FAILS (red + e-mail from GitHub) when mpb-fetcher answers
 # non-2xx / 0 ships / ingest not ok, the Worker's mpbAgeSec is stale, CWA fails, an ingest route answers non-2xx, or /api/ships|/api/quakes timestamps did not advance.
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  repository_dispatch:
+    types: [collect]
 concurrency:
   group: collector
   cancel-in-progress: false

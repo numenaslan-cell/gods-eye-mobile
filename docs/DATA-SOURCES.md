@@ -138,3 +138,8 @@
 * **修正：** `mpb-fetcher` 不再解析，只把 MPB 回應串流到 `POST /api/ships/ingest-mpb`，由 Hub Durable Object（30 秒 CPU）解析、裁切、去重。
 * **監控：** 代理 Worker 的 `*/2` cron 檢查 `mpbAgeSec`：超過 7 分鐘（錯過一個 5 分鐘週期）就透過 service binding `FETCHER` 自行呼叫 `mpb-fetcher /run`；超過 15 分鐘標記 `mpbStale`，`GET /api/health` 回 503（也回報遺失的 binding），`/api/ships` 帶 `mpbStale`；GitHub 收集器最後一步 `Health gate` 在 0 艘船、MPB 過舊或 binding 遺失時讓整個 run 變紅；前端在這些情況顯示「船舶資料暫時無法使用」提示而不是空地圖。
 * **部署不再弄丟 binding：** `proxy/deploy-metadata.json` 是完整 binding 清單，`scripts/deploy-proxy-cf.mjs` 由它產生部署內容並檢查有無遺失（見 `proxy/DEPLOY.md`）。
+
+
+## 資料新鮮度與辨識信心（2026-11-03）
+* **新鮮度**：前端用 `/api/ships` 的 `mpbAgeSec`（航港局）、`/api/quakes/live` 的 `updated`（各來源最近成功時間的最大值）、`/api/pla` 的 `updated.mnd|js`（Worker 最後一次成功抓取）換算成「資料更新於 N 分鐘前」。琥珀色門檻：船舶 10 分、地震 10 分、MND 60 分、Joint Staff 90 分、aisstream 補充來源 60 分。
+* **信心等級**（`src/app.js` 的 `shipConf` / `airConf`）：**確認** = 國防部／日本統合幕僚監部官方資料；**高信心** = 名稱符合 CCG／PLAN 規則（或曾以 CCG 名稱出現），或航空器同時符合 ≥ 2 個獨立訊號（軍籍旗標、中國 ICAO 位址、PLA 機型、PLA 呼號）；**推測** = 只靠 MMSI 413875xxx 號段、只靠 ICAO 0x7A1000–0x7A4FFF 位址段、MMSI 412/413＋船型 35，或「政府船舶」（AIS 55 類）推論。所有非「確認」都不是官方認定。
