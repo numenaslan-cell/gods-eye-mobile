@@ -1449,7 +1449,7 @@
 
       h("div", { className: "ge-ui" },
         ships.unavailable && h("div", { className: "ge-shipnotice", role: "status" }, h("b", null, "⚠ 船舶資料暫時無法使用 · SHIP DATA TEMPORARILY UNAVAILABLE"),
-          h("small", null, ships.unavailable === "stale" ? "航港局（MPB）資料已約 " + ships.unavailableAge + " 分鐘未更新，圖上船隻可能不是最新。系統會自動重試。" : ships.unavailable === "empty" ? "目前沒有收到任何船位，並非海上沒有船。系統會自動重試。" : "無法連到船位服務，系統會自動重試。")),
+          h("small", null, (ships.unavailable === "stale" || (ships.unavailable === "empty" && ships.unavailableAge >= 15)) ? "航港局（MPB）資料已約 " + ships.unavailableAge + " 分鐘未更新，圖上船隻可能不是最新。系統會自動重試。" : ships.unavailable === "empty" ? "目前沒有收到任何船位，並非海上沒有船。系統會自動重試。" : "無法連到船位服務，系統會自動重試。")),
         h("header", { className: "ge-top" },
           h("div", { className: "ge-tag" },
             h("b", { className: "ge-lime" }, "OPEN DATA"), h("span", { className: "ge-dim" }, "//"),

@@ -1,5 +1,5 @@
 /* Service worker: cache the static app shell only (API calls always go to the network) + Web Push alerts. */
-const CACHE = "gods-eye-v10";
+const CACHE = "gods-eye-v11";
 const SHELL = ["./", "index.html", "manifest.json", "assets/styles.css", "assets/config.js", "assets/live-data.js", "assets/passes.js", "assets/push.js",
   "assets/app.bundle.js", "assets/textures.js", "assets/vendor/satellite.min.js", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
