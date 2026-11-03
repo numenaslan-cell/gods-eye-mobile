@@ -171,6 +171,12 @@ scripts/gen-vapid.mjs   產生 VAPID 金鑰
 * 地球貼圖：NASA Earth Observatory — Blue Marble Next Generation、Black Marble；放大時的高解析圖磚：NASA GIBS（BlueMarble_ShadedRelief_Bathymetry、VIIRS_CityLights_2012），詳見 docs/DATA-SOURCES.md
 * [three.js](https://threejs.org)、[React](https://react.dev)、[lucide](https://lucide.dev)（皆 MIT）
 
+## 隱私說明 Privacy
+
+本站使用 [Cloudflare Web Analytics](https://www.cloudflare.com/web-analytics/) 取得匿名的訪客統計（頁面瀏覽數、來源網站、國家、瀏覽器與頁面載入效能）。此統計**不使用 Cookie、不做指紋辨識，也不跨站追蹤個別使用者**。統計資料僅作者可見，用於了解使用情形；若不想被統計，可用瀏覽器的內容阻擋器封鎖 `static.cloudflareinsights.com`。
+
+*English: this site uses Cloudflare Web Analytics for anonymous, cookie-free visitor statistics (page views, referrers, country, browser, load performance). No cookies are used and individual users are not tracked across sites. You can block `static.cloudflareinsights.com` with a content blocker to opt out.*
+
 ## 授權
 
 MIT © 2026 messiah — 見 [LICENSE](LICENSE)。第三方資料與素材請遵守各自條款。

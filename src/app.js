@@ -276,6 +276,7 @@
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["📊 匿名訪客統計　", "新增 Cloudflare Web Analytics：僅統計匿名的頁面瀏覽與效能數據，不使用 Cookie、不追蹤個人或跨站行為，也不影響離線使用。（2026-11-03）"],
     ["🕒 資料新鮮度　", "船舶、地震、PLA 面板顯示「資料更新於 N 分鐘前」；船位超過 10 分鐘未更新會轉為琥珀色提醒。（2026-11-03）"],
     ["🎯 辨識信心標示　", "疑似海警／共軍／共機加上「確認／高信心／推測」：官方國防部與日本統合幕僚監部資料為確認；MMSI 413875、ICAO 0x7A1000–0x7A4FFF、政府船舶推論為推測。附圖例說明。"],
     ["⏱️ 備援收集器更穩定　", "GitHub 排程常延遲 40–75 分鐘；Worker 的 Cloudflare cron 現可在收集器逾時 10 分鐘時主動觸發（需設定專用 token），並在介面顯示 aisstream 補充資料的新舊。"],
