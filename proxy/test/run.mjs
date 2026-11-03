@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
 import { parseCgaRss } from "../src/cga.mjs";
 import { parseMndList, parseMndDetail, parseJsIndex, parseJsTitle, parseJsPdfText, ccgHull, decodeCcgHull, sanitizeJsDetail, sanitizeMndDay, pruneJsEvents, needPdf, plaPublic } from "../src/intel.mjs";
+import { parseQuakeZip, parseQuakeXml, zipEntries, entryTime, s3Warnings, s3Typhoons } from "../src/cwas3.mjs";
+import { parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint, sameEvent, quakeUrls } from "../src/quakes.mjs";
 import { PLAN_HULLS } from "../src/plahulls.mjs";
 import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex, plaSuspect, inPlaBlock } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
@@ -310,4 +312,54 @@ await ok("PLA state helpers: prune window, needPdf, public payload carries attri
   assert.deepEqual(needPdf(kept, {}), ["p20261102_04"]); assert.deepEqual(needPdf(kept, { p20261102_04: {} }), []);
   const P = { mnd: { list: [{ id: "1", date: "2026-11-02" }, { id: "2", date: "2026-11-01" }], days: { 1: { id: "1", date: "2026-11-02", aircraft: 19 } }, okAt: 5 }, js: { events: kept, details: {}, okAt: 6 } };
   const out = plaPublic(P, 10); assert.equal(out.mnd.days.length, 1); assert.equal(out.js.licence, "PDL 1.0"); assert.match(out.js.attribution, /統合幕僚監部/); assert.match(out.mnd.attribution, /國防部/); assert.deepEqual(out.needPdf, ["p20261102_04"]); assert.equal(out.updated.js, 6);
+});
+
+// ---- multi-source earthquakes ----
+await ok("quakes: USGS / EMSC / GFZ real samples parse; same event merges across agencies, CWA wins and sources are recorded", () => {
+  const fx = (f) => readFileSync(new URL("./fixtures/" + f, import.meta.url), "utf8");
+  const U = parseUsgs(JSON.parse(fx("quake-usgs.json"))), E = parseEmsc(JSON.parse(fx("quake-emsc.json"))), G = parseGfz(fx("quake-gfz.txt"));
+  assert.equal(U.length, 3); assert.equal(E.length, 3); assert.equal(G.length, 3);
+  assert.equal(U[0].src, "USGS"); assert.equal(U[0].mag, 4.5); assert.equal(E[0].place, "Taiwan Region"); assert.match(E[0].url, /unid=20261102_0000041/); assert.equal(G[0].t, Date.parse("2026-11-02T02:23:07.490Z")); assert.equal(G[0].magType, "ML");
+  const now = Date.parse("2026-11-03T06:00:00Z");
+  const m3 = mergeQuakeSources({ USGS: U, EMSC: E, GFZ: G }, { now });
+  assert.equal(m3.length, 3, "three real events, each reported by all three agencies"); assert.deepEqual(m3[0].srcs, ["USGS", "EMSC", "GFZ"]); assert.equal(m3[0].src, "USGS"); assert.equal(m3[0].others.length, 2);
+  const cwa = [{ id: "cwa1", src: "CWA", t: Date.parse("2026-11-02T02:23:03Z"), lat: 24.3, lon: 122.2, mag: 4.4, depthKm: 40, place: "宜蘭縣政府東南方 62.1 公里", report: "r" }, { id: "cwa2", src: "CWA", t: Date.parse("2026-11-02T20:00:00Z"), lat: 23.9, lon: 121.6, mag: 3.2, depthKm: 8, place: "花蓮" }];
+  const m = mergeQuakeSources({ CWA: cwa, USGS: U, EMSC: E, GFZ: G }, { now });
+  assert.equal(m.length, 4); assert.equal(m[0].id, "cwa2"); const x = m.find((q) => q.id === "cwa1"); assert.equal(x.src, "CWA"); assert.equal(x.mag, 4.4); assert.deepEqual(x.srcs, ["CWA", "USGS", "EMSC", "GFZ"]); assert.deepEqual(x.others.map((o) => o.src), ["USGS", "EMSC", "GFZ"]);
+  assert.ok(!sameEvent({ t: 0, lat: 24, lon: 121 }, { t: 200000, lat: 24, lon: 121 }) && !sameEvent({ t: 0, lat: 24, lon: 121 }, { t: 0, lat: 26, lon: 121 }));
+  assert.equal(mergeQuakeSources({ USGS: U }, { now: Date.parse("2026-11-20T00:00:00Z") }).length, 0, "older than 7 days dropped");
+  assert.match(quakeUrls(now).EMSC, /minlat=20&maxlat=27.5&minlon=118&maxlon=124.5&start=2026-10-31/);
+});
+await ok("quake push dedupe: the same event first seen from EMSC, later from CWA, alerts once; M<4.5, old and out-of-region events never alert", () => {
+  const now = Date.parse("2026-11-02T03:00:00Z"), t = Date.parse("2026-11-02T02:23:05Z");
+  const emsc = [{ id: "emsc:1", src: "EMSC", t, lat: 24.28, lon: 122.22, mag: 4.5, depthKm: 34, place: "Taiwan Region" }];
+  const a = pickAlertQuakes(mergeQuakeSources({ EMSC: emsc }, { now }), [], now); assert.equal(a.length, 1);
+  const seen = a.map(fingerprint);
+  const cwa = [{ id: "cwa1", src: "CWA", t: t + 4000, lat: 24.31, lon: 122.19, mag: 4.6, depthKm: 40, place: "宜蘭" }];
+  assert.equal(pickAlertQuakes(mergeQuakeSources({ CWA: cwa, EMSC: emsc }, { now }), seen, now).length, 0, "CWA arrives later: no second alert");
+  const other = [{ id: "cwa2", src: "CWA", t: t + 3600000, lat: 24.31, lon: 122.19, mag: 4.6, depthKm: 40, place: "宜蘭" }];
+  assert.equal(pickAlertQuakes(mergeQuakeSources({ CWA: other }, { now: now + 3600000 + 60000 }), seen, now + 3600000 + 60000).length, 1, "a different event an hour later does alert");
+  const small = [{ id: "c3", src: "CWA", t, lat: 24, lon: 121, mag: 4.4, depthKm: 5, place: "x" }, { id: "c4", src: "CWA", t: t - 7 * 3600000, lat: 24, lon: 121, mag: 5.5, depthKm: 5, place: "x" }, { id: "c5", src: "CWA", t, lat: 30, lon: 130, mag: 6, depthKm: 5, place: "x" }];
+  assert.equal(pickAlertQuakes(mergeQuakeSources({ CWA: small }, { now }), [], now).length, 0);
+});
+
+await ok("CWA S3 mirror: zip central directory + deflate, newest report first, same quake shape as the REST normaliser", async () => {
+  const fx = (f) => readFileSync(new URL("./fixtures/" + f, import.meta.url));
+  const felt = await parseQuakeZip(fx("cwa-s3-felt.zip.bin"), "significant"), local = await parseQuakeZip(fx("cwa-s3-local.zip.bin"), "local");
+  assert.equal(felt.length, 3); assert.deepEqual(felt.map((q) => q.mag), [5.6, 4.4, 4.5], "sorted by origin time desc (from the file name), not zip order");
+  assert.equal(felt[0].t, Date.parse("2026-11-01T16:20:07+08:00")); assert.equal(felt[0].id, "cwa" + felt[0].t); assert.equal(felt[0].src, "CWA"); assert.equal(felt[0].kind, "significant");
+  assert.equal(felt[0].place, "宜蘭縣政府東北東方 39.4 公里 (位於臺灣東部海域)"); assert.equal(felt[0].depthKm, 119.5); assert.equal(felt[0].intensity, "宜蘭縣 3級"); assert.match(felt[0].report, /規模5\.6有感地震/); assert.match(felt[0].url, /^https:\/\/scweb\.cwa\.gov\.tw/);
+  assert.deepEqual(local.map((q) => q.mag), [4.8, 3.7]); assert.equal(local[1].kind, "local"); assert.equal(local[0].t, Date.parse("2026-11-02T10:23:09+08:00"));
+  assert.equal(entryTime("CWA-EC115000-2026-1102-102309-OD.xml"), Date.parse("2026-11-02T10:23:09+08:00")); assert.equal(entryTime("README.txt"), 0);
+  assert.equal(parseQuakeXml("<x/>", "local"), null);
+  assert.equal(zipEntries(new Uint8Array(fx("cwa-s3-felt.zip.bin"))).length, 3);
+  const m = mergeQuakeSources({ CWA: [...felt, ...local] }, { now: Date.parse("2026-11-03T06:00:00Z"), days: 7 });
+  assert.equal(m.length, 4, "the 9/11 report is older than 7 days and dropped"); assert.equal(m[0].mag, 4.8);
+});
+await ok("CWA S3 mirror: warnings + typhoon JSON (cwaopendata.dataset wrapper) normalise like the REST API", () => {
+  const fx = (f) => JSON.parse(readFileSync(new URL("./fixtures/" + f, import.meta.url), "utf8"));
+  const w = s3Warnings(fx("cwa-s3-warnings.json"), Date.parse("2026-11-03T03:00:00Z"));
+  assert.deepEqual(w.map((x) => x.phenomena + x.significance), ["陸上強風特報", "大雨特報"]); assert.deepEqual(w[0].locations, ["桃園市", "屏東縣", "澎湖縣"]);
+  assert.equal(s3Warnings(fx("cwa-s3-warnings.json"), Date.parse("2026-11-04T00:00:00Z")).length, 0, "expired warnings dropped");
+  const t = s3Typhoons(fx("cwa-s3-typhoon.json")); assert.equal(t.length, 1); assert.equal(t[0].name, "IN-FA"); assert.equal(t[0].cwaName, "煙花"); assert.ok(t[0].track.length > 10 && t[0].forecast.length > 3);
 });

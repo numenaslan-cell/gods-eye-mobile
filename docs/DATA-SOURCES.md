@@ -24,7 +24,7 @@
 * **疑似 PLA 航空器（⚠️ PLA / 疑似）**：Worker 在 adsb.lol / adsb.fi 的原始物件上套用保守的啟發式（`proxy/src/flights.mjs` 的 `plaSuspect`）：`dbFlags` bit 0（資料庫標為軍用）∧ 中國 ICAO 位址區段 0x780000–0x7BFFFF（香港 0x789xxx、台灣 0x899xxx 排除），或軍用旗標／中國位址 ∧ 典型 PLA 機型（J-10/11/15/16/20/35、JH-7、H-6、Y-8/9/20、KJ-xxx、Z-8/9/10/18/19/20、WZ-、GJ-；Su-30/35 僅在中國位址時算）或 PLA 風格呼號（PLA…／CHN<數字>）。**只有位址、或只有民航呼號（CCA/CES/CSN…）永遠不會被標記**。命中者在回應中帶 `pla: true` 與 `plaWhy`，UI 以紅色標記、「⚠️ 疑似 PLA」徽章與說明顯示。這只是給人看的提示，不是辨識：多數共機根本不發 ADS-B，**官方數字以國防部每日公布為準**（PLA 分頁）。
 * Worker 回應含 `source`（實際用到的來源，如 `adsb.lol` 或 `adsb.lol+adsb.fi`）、`partial`（有哪些來源失敗）。UI 的 FLT 徽章與面板會顯示實際來源。
 
-## 中央氣象署（CWA）地震／颱風／警特報 — 需要使用者自己的 API key
+## 中央氣象署（CWA）地震／颱風／警特報 — 公開 S3 鏡像（免 key）＋ REST 備援
 
 **預設關閉**：Worker 只有在設定了 secret `CWA_API_KEY`（使用者自己的免費 key，只存在 Worker secret，不在 repo 或前端）時才會呼叫 CWA；沒有 key 時 `/api/quakes`、`/api/typhoon`、`/api/warnings` 回 `{"enabled":false,"source":"usgs"}`，前端就維持原本的 USGS 地震資料（推播也維持 USGS M4.5+）。**不使用 CWA 公開測試 key**，專案內也沒有任何 key。
 
@@ -36,9 +36,23 @@
 
 * 取得 key：<https://opendata.cwa.gov.tw/> 會員登入 →「取得授權碼」（免費）。設定：`wrangler secret put CWA_API_KEY`，或用 Cloudflare API `PUT /accounts/<id>/workers/scripts/gods-eye-opensky-proxy/secrets {"name":"CWA_API_KEY","text":"CWA-…","type":"secret_text"}`。**不需要重新部署程式**。
 * 授權：政府資料開放授權條款第 1 版；請標示「資料來源：交通部中央氣象署」（啟用後 UI 會顯示）。
-* **重要：CWA 的 WAF 會拒絕 Cloudflare 出口 IP**（從 Worker 直接呼叫回 HTTP 200 但內容是 HTML「Request Rejected」，與 aisstream 的情況類似）。所以實際資料流是：箱子上的收集器 `scripts/ais-collector.mjs`（環境變數 `CWA_API_KEY`，每 `CWA_SEC`＝300 秒）呼叫 CWA → 正規化 → `POST /api/cwa/ingest`（Bearer `INGEST_TOKEN`）→ Hub DO 儲存（20 分鐘內視為新鮮）→ `/api/quakes|typhoon|warnings`。Worker secret `CWA_API_KEY` 仍設定著，當收集器停止（資料超過 20 分鐘）時 Worker 會嘗試直接抓取（目前會被 WAF 擋，之後若 CWA 放行即自動生效），失敗則回傳舊資料。收集器停止且無資料時，前端自動退回 USGS。
+* **資料流（2026-11-03 改版，不再依賴任何本機）：** CWA 的 REST API（`opendata.cwa.gov.tw`）會拒絕 Cloudflare 出口 IP（HTTP 200 + HTML「Request Rejected」，**連放置在 `gcp:asia-east1` 的 Worker 也一樣**，已實測），所以 Worker 改讀氣象署自己公開的 **AWS S3 鏡像**（`https://cwaopendata.s3.ap-northeast-1.amazonaws.com/`，AWS Open Data，免帳號、免 key）：`Earthquake/E-A0015-001.zip`、`E-A0016-001.zip`（每份報告一個 XML 的 zip；Worker 讀 zip 目錄、只解壓最新 5 份並解析）、`Warning/W-C0033-001.json`、`Warning/W-C0034-005.json`（JSON，結構與 REST 相同但包在 `cwaopendata.dataset` 內）。Hub 每 2 分鐘（cron）用 `If-None-Match` 條件式請求檢查（304＝沒有新資料，不做任何解析），警特報／颱風約每 4 分鐘。實測 CWA 在發震後約 6 分鐘發布（例：2026-11-02 10:23:09 發震 → 10:28:48 發布 → S3 檔案 10:29:25 更新），我們再多延遲最多 2 分鐘。GitHub Actions（`CWA_API_KEY`，REST）仍每 30–60 分鐘 ingest 作為**備援**（同一個 `cwaIngest` 儲存槽，較新的寫入勝出）。
 * CWA JSON 很大（E-A0015-001 約 340 KB），所以在 Durable Object 內處理（地震 60 秒、警特報 120 秒、颱風 5 分鐘快取，上游失敗時回傳舊資料），前端 Worker 只做轉送；key 只放在 URL query（CWA 要求）且錯誤訊息一律遮蔽。
 * 驗證狀況（2026-11-01）：四個資料集都用使用者自己的 key 對真實 API 測試過；解析以**真實回應樣本**（`proxy/test/fixtures/`，已縮減）做單元測試。注意：颱風資料集的實際 JSON 欄位是 PascalCase（`TropicalCyclones.TropicalCyclone[].AnalysisData.Fix[]`、`CoordinateLongitude/Latitude`），警特報的 `validTime` 沒有時區（視為台北時間 +08:00）；解析器兩種大小寫都接受。
+
+### 地震多來源評估與合併（2026-11-03）/ Earthquake sources: test results & merge rule
+
+| 來源 | 台灣周邊涵蓋 | 實測延遲 | 授權 | 採用？ |
+|---|---|---|---|---|
+| **CWA E-A0015/E-A0016**（S3 鏡像） | 最完整：有感地震含 M<4 的小區域有感地震 | 發震後約 6 分鐘（CWA 發布時間）＋ ≤ 2 分鐘輪詢 | 政府資料開放授權條款第 1 版；「資料來源：交通部中央氣象署」 | ✅ 主要、**權威** |
+| CWA REST API（有 key） | 同上 | — | 同上 | ⚠ 從 Cloudflare（含台灣放置 Worker）被 WAF 擋；只有 GitHub Actions 能用 → 備援 |
+| USGS FDSN geojson | 約 M4.5+（國際目錄） | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | 公有領域 | ✅ |
+| EMSC-CSEM SeismicPortal FDSN | 約 M4.5+ | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | CC BY 4.0（需標示、不得鏡像／大量複製） | ✅（UI 與 README 標示；WebSocket 未採用：免費 Worker 無法長連線，輪詢已足夠） |
+| GFZ GEOFON FDSN text | 約 M4.5+ | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | CC BY 4.0 | ✅ |
+| JMA `list.json`、P2PQuake | 只涵蓋日本國內震度資訊，台灣周邊幾乎沒有 | — | — | ❌ 無用 |
+| CWA 公開網頁／RSS／ExpTech | 網頁無穩定 JSON；RSS 授權禁止衍生；ExpTech 為非官方且被擋 | — | — | ❌ |
+
+合併規則（`proxy/src/quakes.mjs`）：兩筆事件在 **±150 秒且緯度與經度各 ±1.5°** 內視為同一地震；來源優先順序 CWA > USGS > EMSC > GFZ，保留優先來源的規模／位置，並記錄 `src`、`srcs[]` 與其他機構的規模 `others[]`（UI 顯示「來源 CWA·USGS·EMSC」）。小於 M4.5 的地震只有氣象署有，因此氣象署資料延遲時，UI 會註明「僅顯示國際來源 (M4.5+)」。推播以事件指紋（時間／位置）去重，避免同一地震被不同機構先後回報而重複推送。
 
 ## 標記圖示與「疑似」警示標籤 / Marker shapes & suspect labels
 

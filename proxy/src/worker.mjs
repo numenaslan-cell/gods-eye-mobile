@@ -6,6 +6,7 @@
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
  *   GET  /api/quakes | /api/typhoon | /api/warnings   CWA open data (secret CWA_API_KEY); {enabled:false} -> client falls back to USGS
+ *   GET  /api/quakes/live  merged quakes: CWA (authoritative, fetched every 2 min through the Taiwan-placed pla-intel Worker; GitHub Actions ingest is the backup) + USGS + EMSC + GFZ, deduped, each with its source(s)
  *   GET  /api/cga          CGA (海巡署) RSS items mentioning 海警, parsed in the Hub DO, cached 30 min
  *   GET  /api/pla          PLA-activity intel: Taiwan MND daily bulletins + Japan Joint Staff releases (scraped by the placed `pla-intel` Worker via service binding INTEL; PDF details posted by GitHub Actions)
  *   POST /api/pla/ingest | /api/pla/refresh | GET /api/pla/pdf/:id   Bearer INGEST_TOKEN (GitHub Actions)
@@ -23,8 +24,10 @@ import { applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AI
 import { plaPublic, pruneJsEvents, sanitizeJsDetail, sanitizeMndDay } from "./intel.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
-import { cwaData } from "./cwa.mjs";
+import { cwaData, mergeQuakes } from "./cwa.mjs";
 import { fetchCga } from "./cga.mjs";
+import { parseQuakeZip, s3Get, s3Warnings, s3Typhoons } from "./cwas3.mjs";
+import { quakeUrls, parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint } from "./quakes.mjs";
 
 const UPSTREAM = "https://opensky-network.org/api";
 const SITE = "https://numenaslan-cell.github.io/gods-eye-mobile/";
@@ -113,6 +116,11 @@ export default {
       const r = await hub.fetch("https://hub/cwa/" + p.slice("/api/".length)); // fetched + parsed inside the Durable Object (big JSON, 10 ms CPU on the free plan front Worker)
       return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=60" }) });
     }
+    if (request.method === "GET" && p === "/api/quakes/live") {
+      if (!hub) return json(cors, { error: "not configured" }, 503);
+      const r = await hub.fetch("https://hub/quakes-live");
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=30" }) });
+    }
     if (request.method === "GET" && p === "/api/cga") {
       if (!hub) return json(cors, { error: "not configured" }, 503);
       const r = await hub.fetch("https://hub/cga");
@@ -153,6 +161,7 @@ export default {
     if (!env.HUB) return;
     const hub = env.HUB.get(env.HUB.idFromName("main"));
     ctx.waitUntil(hub.fetch("https://hub/cron", { method: "POST" }).then((r) => r.text()).catch(() => {}));
+    ctx.waitUntil(hub.fetch("https://hub/quake-cron", { method: "POST" }).then((r) => r.text()).catch(() => {})); // separate invocation = separate 10 ms CPU budget
   },
 };
 
@@ -162,7 +171,7 @@ export class Hub {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
     ctx.blockConcurrencyWhile(async () => {
-      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt", "pla"]); this.pla = s.get("pla") || { mnd: { list: [], days: {} }, js: { events: [], details: {} } }; this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
+      const s = await ctx.storage.get(["ships", "lastCollect", "lastError", "diag", "cron", "mpbAt", "pla", "qk", "cwaIngest"]); this.cwaIng = s.get("cwaIngest") || {}; this.qk = s.get("qk") || { src: {}, ev: {}, fs: {}, since: Date.now() }; this.pla = s.get("pla") || { mnd: { list: [], days: {} }, js: { events: [], details: {} } }; this.mpbAt = s.get("mpbAt") || 0; this.diag = s.get("diag") || null; this.cron = s.get("cron") || null;
       this.ships = s.get("ships") || {}; this.lastCollect = s.get("lastCollect") || 0; this.lastError = s.get("lastError") || "";
       this.everCollected = this.lastCollect > 0;
       await this.loadKnown(); this.markKnown();
@@ -176,6 +185,8 @@ export class Hub {
       if (path === "/ingest") return this.ingest(request);
       if (path === "/cga") return this.cga();
       if (path === "/cwa-ingest") return this.cwaIngest(request);
+      if (path === "/quakes-live") return new Response(this.quakesLiveBody(), { headers: { "Content-Type": "application/json" } });
+      if (path === "/quake-cron") return new Response(JSON.stringify(await this.quakeCron()), { headers: { "Content-Type": "application/json" } });
       if (path === "/pla") return new Response(JSON.stringify(plaPublic(this.pla, Date.now())), { headers: { "Content-Type": "application/json" } });
       if (path === "/pla-ingest") return this.plaIngest(request);
       if (path === "/pla-refresh") { const rep = await this.plaRefresh(true); return new Response(JSON.stringify({ ok: true, report: rep, ...plaPublic(this.pla, Date.now()) }), { headers: { "Content-Type": "application/json" } }); }
@@ -285,6 +296,94 @@ export class Hub {
       const left = Object.keys(this.known); if (left.length > 400) for (const m of left.sort((a, b) => this.known[a].t - this.known[b].t).slice(0, left.length - 400)) delete this.known[m];
       try { await this.env.SUBS.put("ccg:known", JSON.stringify(this.known)); this.knownDirty = false; this.knownWrote = now; } catch { /* retry on the next ingest */ }
     }
+  }
+
+  /* ---- multi-source earthquakes (every cron tick, own invocation) ---- */
+  storeCwa(kind, obj, now) {
+    const ing = this.cwaIng || {}; this.cwaIng = ing;
+    const body = { ...obj, via: "s3" }; if (kind === "quakes" && Array.isArray(body.quakes)) body.quakes = body.quakes.slice(0, 100);
+    ing[kind] = { at: now, body: JSON.stringify(body) }; this.cwaCache = {}; this._cwaParsed = null; this._qlive = null;
+  }
+  async quakeCron() {
+    if (this.qkBusy) return { busy: true };
+    this.qkBusy = true; const now = Date.now(), Q = this.qk, rep = {};
+    try {
+      if (!this.cwaIng) this.cwaIng = (await this.ctx.storage.get("cwaIngest")) || {};
+      const jobs = [];
+      const urls = quakeUrls(now);
+      for (const src of ["USGS", "EMSC", "GFZ"]) jobs.push((async () => {
+        const S = Q.src[src] = Q.src[src] || {}, t0 = Date.now(); S.at = now;
+        try {
+          const r = await fetch(urls[src], { headers: { Accept: "application/json, text/plain", "User-Agent": "gods-eye-view/1.0 (+https://numenaslan-cell.github.io/gods-eye-mobile/)" }, signal: AbortSignal.timeout(9000), cf: { cacheTtl: 0 } });
+          if (r.status === 204) { Q.ev[src] = []; S.okAt = Date.now(); S.err = null; S.n = 0; S.ms = Date.now() - t0; rep[src] = 0; return; }
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const list = src === "GFZ" ? parseGfz(await r.text()) : (src === "USGS" ? parseUsgs : parseEmsc)(await r.json());
+          Q.ev[src] = list.slice(0, 100); S.okAt = Date.now(); S.err = null; S.n = list.length; S.ms = Date.now() - t0; rep[src] = list.length;
+        } catch (e) { S.err = String((e && e.message) || e).slice(0, 100); rep[src] = "err:" + S.err; }
+      })());
+      jobs.push(this.cwaCron(now, Q, rep));
+      await Promise.all(jobs);
+      for (const src of Object.keys(Q.ev)) for (const q of Q.ev[src]) if (!Q.fs[q.id]) Q.fs[q.id] = now;
+      for (const k of Object.keys(Q.fs)) if (now - Q.fs[k] > 5 * 86400000) delete Q.fs[k];
+      this._qlive = null;
+      await this.ctx.storage.put({ qk: Q, cwaIngest: this.cwaIng });
+    } finally { this.qkBusy = false; }
+    return rep;
+  }
+  /** CWA from its public AWS S3 mirror (no key, no WAF; see cwas3.mjs) with conditional GETs every tick: quakes (felt + small-area zips), warnings + typhoon every ~4 min.
+   *  The GitHub Actions REST ingest stays as the backup (same cwaIngest slot; newest write wins). */
+  async cwaCron(now, Q, rep) {
+    const S = Q.src.CWA = Q.src.CWA || {}; S.at = now; S.etags = S.etags || {};
+    const ing = this.cwaIng = this.cwaIng || {}, t0 = Date.now();
+    const touch = (kind) => { if (ing[kind]) { ing[kind] = { ...ing[kind], at: Date.now() }; this.cwaCache = {}; this._cwaParsed = null; this._qlive = null; } }; // "checked, nothing new"
+    try {
+      const [a, b] = await Promise.allSettled([s3Get("felt", S.etags.felt), s3Get("local", S.etags.local)]);
+      if (a.status === "rejected" && b.status === "rejected") throw a.reason;
+      const fresh = [], got = {}; let partial = null;
+      for (const [r, key, kind] of [[a, "felt", "significant"], [b, "local", "local"]]) {
+        if (r.status === "rejected") { partial = String(r.reason && r.reason.message || r.reason).slice(0, 100); continue; }
+        if (r.value.status === 200) { fresh.push(...await parseQuakeZip(r.value.buf, kind)); got[key] = r.value.etag; }
+      }
+      if (Object.keys(got).length) {
+        let prev = []; try { prev = ing.quakes ? JSON.parse(ing.quakes.body).quakes || [] : []; } catch { /* ignore */ }
+        const list = mergeQuakes(fresh, prev).filter((q) => now - q.t < 8 * 86400000).slice(0, 100);
+        this.storeCwa("quakes", { enabled: true, source: "cwa", attribution: "資料來源：交通部中央氣象署 (CWA Open Data)", time: Date.now(), quakes: list, partial: partial ? true : undefined }, Date.now());
+        Object.assign(S.etags, got); S.changedAt = Date.now(); rep.CWA = "new:" + fresh.length;
+      } else { touch("quakes"); rep.CWA = "unchanged"; }
+      S.okAt = Date.now(); S.err = partial; S.ms = Date.now() - t0; S.via = "s3";
+    } catch (e) { S.err = String((e && e.message) || e).slice(0, 160); rep.CWA = "err:" + S.err; }
+    if (now - (S.extraAt || 0) > 4 * 60000) {
+      S.extraAt = now;
+      for (const [kind, key] of [["warnings", "warnings"], ["typhoon", "typhoon"]]) {
+        try {
+          const r = await s3Get(key, S.etags[key]);
+          if (r.status === 304) { touch(kind); rep[kind] = "unchanged"; }
+          else {
+            const j = JSON.parse(new TextDecoder().decode(r.buf)), base = { enabled: true, source: "cwa", attribution: "資料來源：交通部中央氣象署 (CWA Open Data)", time: Date.now() };
+            this.storeCwa(kind, kind === "warnings" ? { ...base, warnings: s3Warnings(j, Date.now()) } : { ...base, typhoons: s3Typhoons(j) }, Date.now());
+            S.etags[key] = r.etag; rep[kind] = "new";
+          }
+          if (S.extraErr && S.extraErr.startsWith(kind)) S.extraErr = null;
+        } catch (e) { S.extraErr = kind + ": " + String((e && e.message) || e).slice(0, 100); rep[kind] = "err"; }
+      }
+    }
+  }
+  /** merged list (sync, from memory): CWA (cron or GitHub ingest, whichever is newer) + USGS + EMSC + GFZ */
+  mergedQuakes(now = Date.now()) {
+    const ing = this.cwaIng && this.cwaIng.quakes; let cwa = [];
+    if (ing) { if (!this._cwaParsed || this._cwaParsed.at !== ing.at) { let l = []; try { l = JSON.parse(ing.body).quakes || []; } catch { /* ignore */ } this._cwaParsed = { at: ing.at, list: l }; } cwa = this._cwaParsed.list; }
+    return mergeQuakeSources({ CWA: cwa, USGS: this.qk.ev.USGS, EMSC: this.qk.ev.EMSC, GFZ: this.qk.ev.GFZ }, { now });
+  }
+  quakesLiveBody() {
+    const now = Date.now();
+    if (this._qlive && now - this._qlive.at < 10000) return this._qlive.body;
+    const Q = this.qk, ing = this.cwaIng && this.cwaIng.quakes, sources = {};
+    let via = null; try { via = ing ? JSON.parse(ing.body).via || "collector" : null; } catch { /* ignore */ }
+    for (const src of ["USGS", "EMSC", "GFZ"]) { const S = Q.src[src] || {}; const lat = []; for (const q of Q.ev[src] || []) if (q.t > Q.since && Q.fs[q.id]) lat.push(Math.round((Q.fs[q.id] - q.t) / 60000)); lat.sort((a, b) => a - b); sources[src] = { okAt: S.okAt || null, err: S.err || null, n: S.n != null ? S.n : null, firstSeenLagMin: lat.length ? lat : undefined }; }
+    sources.CWA = { okAt: ing ? ing.at : null, via, cronOkAt: (Q.src.CWA || {}).okAt || null, err: (Q.src.CWA || {}).err || null, extraErr: (Q.src.CWA || {}).extraErr || null };
+    const okAts = Object.values(sources).map((x) => x.okAt || 0), merged = this.mergedQuakes(now).slice(0, 150);
+    const body = JSON.stringify({ time: now, updated: Math.max(0, ...okAts), sources, count: merged.length, quakes: merged });
+    this._qlive = { at: now, body }; return body;
   }
 
   /* ---- PLA-activity intel: MND daily + Japan Joint Staff (scraped by the Taiwan-placed `pla-intel` Worker, service binding INTEL) ---- */
@@ -461,34 +560,19 @@ export class Hub {
   }
 
   async checkQuakes(list, push) {
-    if (this.env.CWA_API_KEY) { // CWA felt-earthquake reports (E-A0015-001) when the user's own key is configured; USGS otherwise / on failure
-      try { return await this.checkQuakesCwa(list, push); } catch (e) { /* fall through to USGS */ }
+    // merged CWA + USGS + EMSC + GFZ (dedupe by time/location, CWA preferred). The "seen" memory stores event fingerprints (not per-agency ids), so the same quake
+    // reported first by EMSC and later by CWA never alerts twice. First run only seeds the memory (no alert burst after a deploy).
+    const now = Date.now(), live = this.mergedQuakes(now);
+    let seen = await this.ctx.storage.get("quakeSeen2"); const first = !seen; seen = (seen || []).filter((s) => now - s.t < 8 * 3600000);
+    const cand = pickAlertQuakes(live, seen, now);
+    if (first) { await this.ctx.storage.put("quakeSeen2", cand.map(fingerprint)); return "seeded " + cand.length; }
+    for (const q of cand) {
+      const label = q.src === "CWA" ? "（中央氣象署）" : "（" + q.src + " 速報，氣象署報告可能稍後發布）";
+      await push(list, { title: "🌏 台灣周邊地震 M" + q.mag.toFixed(1) + label, body: (q.report || q.place) + " · 深度 " + Math.round(q.depthKm) + " km · 來源 " + q.srcs.join("+"), tag: "quake-" + Math.round(q.t / 300000), url: q.url || SITE }, { urgency: "high", ttl: 3600 });
+      seen.push(fingerprint(q));
     }
-    const res = await fetch(this.env.USGS_URL || "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson", { cf: { cacheTtl: 60, cacheEverything: true } });
-    if (!res.ok) throw new Error("USGS HTTP " + res.status);
-    const seen = (await this.ctx.storage.get("quakeSeen")) || [];
-    const fresh = selectQuakes((await res.json()).features || [], seen, Date.now());
-    for (const q of fresh) {
-      const when = new Date(q.time).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-      await push(list, { title: "🌏 台灣周邊地震 M" + q.mag.toFixed(1), body: q.place + " · 深度 " + Math.round(q.depth) + " km · " + when + "（台北時間）", tag: "quake-" + q.id, url: q.url || SITE }, { urgency: "high", ttl: 3600 });
-      seen.push(q.id);
-    }
-    if (fresh.length) await this.ctx.storage.put("quakeSeen", seen.slice(-100));
-    return fresh.length;
-  }
-
-  async checkQuakesCwa(list, push) {
-    const d = JSON.parse(await (await this.cwa("quakes")).text());
-    if (!d.quakes) throw new Error(d.error || "cwa unavailable");
-    const seen = (await this.ctx.storage.get("quakeSeen")) || [], now = Date.now();
-    let n = 0;
-    for (const q of d.quakes) {
-      if (q.mag < 4.5 || now - q.t > 6 * 3600000 || seen.includes(q.id)) continue; // same M4.5+ / 6 h rule as the USGS path
-      await push(list, { title: "🌏 台灣地震 M" + q.mag.toFixed(1) + "（中央氣象署）", body: (q.report || q.place) + " · 深度 " + Math.round(q.depthKm) + " km", tag: "quake-" + q.id, url: q.url || SITE }, { urgency: "high", ttl: 3600 });
-      seen.push(q.id); n++;
-    }
-    if (n) await this.ctx.storage.put("quakeSeen", seen.slice(-100));
-    return n;
+    if (cand.length) await this.ctx.storage.put("quakeSeen2", seen.slice(-100));
+    return cand.length;
   }
 
   async checkCcg(list, push) {

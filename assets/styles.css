@@ -137,7 +137,7 @@ small { font-size: 9px; }
 }
 
 /* ---- tabbed dock (flights / ships / sats / passes / alerts) ---- */
-.ge-tabs { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid rgba(200,255,0,.2); flex: 0 0 auto; }
+.ge-tabs { display: grid; grid-template-columns: repeat(8, 1fr); border-top: 1px solid rgba(200,255,0,.2); flex: 0 0 auto; }
 .ge-tab { min-height: 48px; min-width: 0; padding: 4px 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border-right: 1px solid rgba(255,255,255,.07); color: rgba(255,255,255,.75); font-size: 9.5px; letter-spacing: .06em; }
 .ge-tab:last-child { border-right: 0; }
 .ge-tab b { font-size: 9.5px; letter-spacing: .04em; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -222,3 +222,5 @@ small { font-size: 9px; }
 @media (prefers-reduced-motion: reduce) { .ge-wring { animation: none; opacity: .8; } }
 .ge-legend svg { margin-right: 1px; }
 .ge-plan { background: rgba(255,0,85,.9) !important; border-color: #ff0055; }
+
+.ge-news { margin: 0; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.8); } .ge-news b { display: block; color: var(--lime); font-size: 12.5px; letter-spacing: .02em; }

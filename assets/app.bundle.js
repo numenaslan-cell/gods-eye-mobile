@@ -4107,6 +4107,17 @@ void main() {
   var QuakeIcon = function (p) { return svgIcon([h("path", { key: 1, d: "M2 12h4l3-8 4 16 3-8h6" })], p.size); };
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
+  var NEWS = [
+    ["🚢 航港局船位不再依賴本機　", "由台灣區域的 Cloudflare Worker 每 5 分鐘抓取交通部航港局 MPB，不需要任何本機常駐。"],
+    ["🪖 國防部每日通報 + 公務船　", "解放軍機艦每日架次、艦艇與「公務船」數量與地圖連結，顯示在 PLA 分頁。"],
+    ["🇯🇵 日本統合幕僚監部　", "收錄日方公布的中國艦艇舷號與艦名、機種與海峽動向（PDL 1.0）。"],
+    ["⚓ 海警（CCG）規則升級　", "新增 413875 等識別規則，並由舷號解讀所屬海警局（隸屬局）。"],
+    ["🛳️ 「政府船舶」標示　", "對無法確認類型的 55 類目標，改用較保守的「政府船舶」標籤，不再硬判為軍艦或海警。"],
+    ["✈️ 解放軍機 ICAO 位址區段　", "加入 0x7A1000–0x7A4FFF 位址段先驗，並補上運油機、運輸機等機型代碼。"],
+    ["🌏 地震多來源即時合併　", "中央氣象署（含小規模地震）+ USGS + EMSC + GFZ，每 2 分鐘更新並去重，以氣象署為準；每筆標示來源，推播不重複。"],
+  ];
+  function srcLabel(q) { return (q.srcs && q.srcs.length ? q.srcs : [q.src || "USGS"]).join("·"); }
+  function srcMags(q) { var all = [{ src: q.src || "USGS", mag: q.mag }].concat(q.others || []); return all.length > 1 ? all.map(function (o) { return o.src + " M" + Number(o.mag).toFixed(1); }).join(" · ") : ""; }
   function quakeAgo(t) { var m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? m + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; }
 
   /* ---- ship marker colours by class (distinct from the white aircraft cones) ---- */
@@ -5187,14 +5198,15 @@ void main() {
       var bits = [], selQ = selQuakeId ? quakes.list.find(function (x) { return x.id === selQuakeId; }) : null;
       var day = quakes.list.filter(function (x) { return Date.now() - x.t < 86400000; }).length;
       var big = quakes.list.reduce(function (m, x) { return x.mag > m ? x.mag : m; }, 0);
-      if (quakes.status === "demo") bits.push(h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — USGS unreachable (" + (quakes.error || "?") + "). Retrying…"));
-      if (quakes.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, "Contacting USGS…"));
+      if (quakes.status === "demo") bits.push(h("p", { key: "w", className: "ge-note ge-warn" }, "DEMO DATA — quake feeds unreachable (" + (quakes.error || "?") + "). Retrying…"));
+      if (quakes.status === "loading") bits.push(h("p", { key: "l", className: "ge-note" }, "Contacting CWA / USGS / EMSC / GFZ…"));
       bits.push(h("div", { key: "cnt", className: "ge-iss" },
         h("div", null, h("b", null, fmtN(quakes.count) + " QUAKES · 30 DAYS"), h("small", null, "M3.0+ · " + fmtN(day) + " IN LAST 24 H" + (big ? " · MAX M" + big.toFixed(1) : "")))));
       if (selQ) bits.push(h("div", { key: "sel", className: "ge-quake-sel" },
         h("b", { style: { color: quakeCss(selQ.mag) } }, "M" + selQ.mag.toFixed(1) + " · " + selQ.place),
         h("small", null, new Date(selQ.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " (local) · " + quakeAgo(selQ.t) + " · depth " + (selQ.depthKm != null ? Math.round(selQ.depthKm) + " km" : "--") + " · " + fmtLL(selQ.lat, selQ.lon)),
-        selQ.url && !selQ.demo ? h("a", { href: selQ.url, target: "_blank", rel: "noopener noreferrer" }, selQ.src === "CWA" ? "CWA 地震報告 ↗" : "USGS EVENT PAGE ↗") : null));
+        selQ.url && !selQ.demo ? h("a", { href: selQ.url, target: "_blank", rel: "noopener noreferrer" }, selQ.src === "CWA" ? "CWA 地震報告 ↗" : selQ.src === "EMSC" ? "EMSC EVENT PAGE ↗" : selQ.src === "GFZ" ? "GFZ EVENT PAGE ↗" : "USGS EVENT PAGE ↗") : null,
+        h("small", null, "來源 SOURCE: " + srcLabel(selQ) + (srcMags(selQ) ? " · " + srcMags(selQ) : "") + (selQ.src === "CWA" ? " · 以氣象署為準" : ""))));
       var cwa = Data.state.cwa;
       if (cwa && cwa.enabled) {
         cwa.warnings.slice(0, 6).forEach(function (w, i) {
@@ -5210,10 +5222,17 @@ void main() {
           h("em", { className: "ge-mag", style: { background: quakeCss(q.mag) } }, "M" + q.mag.toFixed(1)),
           h("span", { className: "ge-pass-main" },
             h("b", null, q.place),
-            h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --")))));
+            h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --") + " · " + srcLabel(q)))));
       })));
-      else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ earthquakes recorded by USGS around Taiwan in the last 30 days."));
-      bits.push(h("p", { key: "src", className: "ge-src" }, (quakes.source && quakes.source !== "USGS" ? quakes.source + " · 資料來源：交通部中央氣象署 · " : "USGS Earthquake Catalog (FDSN) · ") + "20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
+      else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ earthquakes recorded around Taiwan in the last 30 days."));
+      bits.push(h("p", { key: "src", className: "ge-src" }, "來源 " + (quakes.source || "USGS") + "（合併去重，同一事件以 CWA 優先；每 2 分鐘更新 · live feed refreshes every 2 min）· 資料來源：交通部中央氣象署 CWA · USGS (public domain) · EMSC-CSEM (CC BY 4.0) · GFZ GEOFON (CC BY 4.0) · 20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago" + (quakes.sources && quakes.sources.CWA && !quakes.sources.CWA.okAt ? " · ⚠ CWA 暫時無資料，目前僅顯示國際來源 (M4.5+)" : "") + " · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
+      return bits;
+    }
+
+    function newsBody() {
+      var bits = [h("p", { key: "h", className: "ge-note" }, "最近更新 · 2026-11-03（台北時間）")];
+      NEWS.forEach(function (n, i) { bits.push(h("p", { key: "n" + i, className: "ge-news" }, h("b", null, n[0]), n[1])); });
+      bits.push(h("p", { key: "s", className: "ge-src" }, "⚠ 軍艦、海警、軍機標示皆為依公開資料與規則推測的啟發式判斷，非官方認定。完整說明見 GitHub README 與 docs/DATA-SOURCES.md。"));
       return bits;
     }
 
@@ -5226,7 +5245,7 @@ void main() {
       if (!enabled) bits.push(h("p", { key: "c", className: "ge-note ge-warn" }, "PUSH NOT ACTIVE ON THE SERVER YET — " + ((srv && srv.reason) || "the Worker has no VAPID keys / KV configured") + ". The toggles below work once it is deployed."));
       if (pi.permission === "denied") bits.push(h("p", { key: "d", className: "ge-note ge-warn" }, "Notifications are blocked for this site in your browser settings."));
       bits.push(h("p", { key: "h", className: "ge-note" }, "Get notified even when the page is closed:"));
-      bits.push(toggleBtn("🌏 EARTHQUAKE M4.5+ NEAR TAIWAN (USGS)", pushPrefs.quake, function () { togglePref("quake"); }, "q"));
+      bits.push(toggleBtn("🌏 EARTHQUAKE M4.5+ NEAR TAIWAN (CWA / USGS / EMSC)", pushPrefs.quake, function () { togglePref("quake"); }, "q"));
       bits.push(toggleBtn("⚓ CHINA COAST GUARD VESSEL IN LIVE AIS (HEURISTIC)", pushPrefs.ccg, function () { togglePref("ccg"); }, "c2"));
       bits.push(toggleBtn("🛰️ ISS PASS ~5 MIN BEFORE (" + observer.label + ")", pushPrefs.iss, function () { togglePref("iss"); }, "i2"));
       bits.push(h("div", { key: "act", className: "ge-two" },
@@ -5245,6 +5264,7 @@ void main() {
       { id: "pla", label: "PLA", sum: Data.state.intel.mnd.length ? String(Data.state.intel.mnd[0].aircraft == null ? "—" : Data.state.intel.mnd[0].aircraft) : Data.state.pla.latest ? String(Data.state.pla.latest.aircraft) : "—", body: plaBody },
       { id: "sats", label: "SATS", sum: String(over.length), body: satsBody },
       { id: "passes", label: "PASSES", sum: (function () { var n = passes.list.find(function (p) { return p.end > Date.now(); }); return n ? hm(n.start) : "—"; })(), body: passesBody },
+      { id: "news", label: "NEW", sum: "11/3", body: newsBody },
       { id: "alerts", label: "ALERTS", sum: pushInfo && pushInfo.subscribed ? "ON" : "OFF", body: alertsBody },
     ];
     var curTab = TABS.find(function (t) { return t.id === tab; });
@@ -5321,6 +5341,9 @@ void main() {
           h("a", { href: "https://www.cga.gov.tw", target: "_blank", rel: "noopener noreferrer" }, "海巡署 CGA"), " · ",
           h("a", { href: "https://celestrak.org", target: "_blank", rel: "noopener noreferrer" }, "CelesTrak"), " · ",
           h("a", { href: "https://earthquake.usgs.gov", target: "_blank", rel: "noopener noreferrer" }, "USGS"), " · ",
+          h("a", { href: "https://www.seismicportal.eu", target: "_blank", rel: "noopener noreferrer" }, "EMSC-CSEM (CC BY 4.0)"), " · ",
+          h("a", { href: "https://geofon.gfz.de", target: "_blank", rel: "noopener noreferrer" }, "GFZ GEOFON (CC BY 4.0)"), " · ",
+          h("a", { href: "https://opendata.cwa.gov.tw", target: "_blank", rel: "noopener noreferrer" }, "交通部中央氣象署 CWA"), " · ",
           h("a", { href: "https://earthdata.nasa.gov/gibs", target: "_blank", rel: "noopener noreferrer" }, "NASA GIBS imagery"), " · ",
           h("a", { href: "https://github.com/shashwatak/satellite-js", target: "_blank", rel: "noopener noreferrer" }, "satellite.js"),
           demoAny && h("b", { className: "ge-amber" }, " · DEMO DATA ACTIVE"))),

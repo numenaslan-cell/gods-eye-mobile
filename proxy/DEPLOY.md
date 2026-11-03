@@ -15,11 +15,14 @@ Everything stays on the **Cloudflare free plan** (no paid add-ons).
 > ```
 > Run it somewhere that stays on (home PC / Raspberry Pi / a VPS whose IP aisstream accepts). Ships stay in the Worker for 30 min after the collector stops.
 
-## Taiwan CWA quakes / typhoon / warnings (needs the owner's own key) — fed by the collector
-CWA's WAF rejects Cloudflare egress IPs (HTTP 200 + HTML "Request Rejected"), so like aisstream the data goes through the collector: set `CWA_API_KEY` (free key from <https://opendata.cwa.gov.tw/>) in the collector's environment;
-it fetches E-A0015-001 + E-A0016-001 (quakes), W-C0034-005 (typhoon), W-C0033-001 (warnings) every `CWA_SEC` (300 s), normalises them and POSTs `{cwa:{…}}` to `/api/cwa/ingest` (Bearer `INGEST_TOKEN`).
-`GET /api/quakes|typhoon|warnings` serve that data (fresh for 20 min). The Worker secret `CWA_API_KEY` (optional) enables a direct-fetch fallback; with neither the secret nor ingested data the routes return `{"enabled":false,"source":"usgs"}` and the app keeps using USGS.
-Push quake alerts use CWA felt reports when CWA data is available. See `docs/DATA-SOURCES.md`.
+## Earthquakes (CWA + USGS + EMSC + GFZ), typhoon, warnings — fresh every 2 minutes, no key, no local machine
+The `*/2` cron calls the Hub's `/quake-cron` (its own invocation): it fetches USGS (FDSN geojson), EMSC (FDSN json) and GFZ (FDSN text) for 20–27.5°N 118–124.5°E, last 3 days, and **CWA's public S3 mirror**
+`https://cwaopendata.s3.ap-northeast-1.amazonaws.com/` (`Earthquake/E-A0015-001.zip` + `E-A0016-001.zip` are zips of one XML per report — the Worker reads the zip central directory, inflates only the newest 5 entries and parses the XML with regexes;
+`Warning/W-C0033-001.json`, `Warning/W-C0034-005.json` for warnings/typhoon every ~4 min). All S3 reads are conditional (`If-None-Match` → 304 = no work).
+CWA's REST API (`opendata.cwa.gov.tw`) turns Cloudflare egress away with HTTP 200 + HTML "Request Rejected" even from a Worker placed in `gcp:asia-east1` (tested), so GitHub Actions (`CWA_API_KEY` secret, `scripts/collect-once.mjs`) remains the **backup**: its ingest writes the same `cwaIngest` slot (`POST /api/cwa/ingest`).
+`GET /api/quakes/live` returns the merged, de-duplicated list (CWA authoritative; each quake carries `src`, `srcs[]`, `others[{src,mag}]`) plus per-source health (`sources.{USGS,EMSC,GFZ,CWA}.okAt|err|via`).
+`GET /api/quakes|typhoon|warnings` still serve the CWA data as before (fresh for 20 min; the cron re-stamps it on every "nothing new" check).
+Push quake alerts use the merged list and a per-event fingerprint (time/location), so one earthquake alerts once even if EMSC, USGS and CWA report it minutes apart. See `docs/DATA-SOURCES.md`.
 
 ## Second AIS source: Taiwan MPB (交通部航港局), no key
 `scripts/ais-collector.mjs` also polls `https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx` (needs `Referer: https://mpbais.motcmpb.gov.tw/aismpb/`, ~2.9 MB) every `MPB_SEC` (default 120 s, min 90 s),
@@ -95,7 +98,7 @@ In the app: Alerts tab → enable → "Send test push". On iOS 16.4+ you must fi
 * `GET /api/ships` → front Worker → Durable Object `Hub` (singleton). If data is older than 90 s the DO opens an outbound WebSocket to
   `wss://stream.aisstream.io/v0/stream` for ~25 s (box 18–34°N 108–132°E: Taiwan **and neighbouring waters** — coverage inside Taiwan's own waters is almost empty on aisstream, 1 vessel / 2 min measured, while Hong Kong / S. China and Japan are well covered; position + static messages), merges per MMSI, keeps 30 min.
   Heavy work runs in the DO (30 s CPU) so the Worker's 10 ms CPU limit is never an issue.
-* Cron (every 2 min) only pokes the DO, which: fetches USGS `4.5_day.geojson` (new M4.5+ in the Taiwan box, ≤ 6 h old);
+* Cron (every 2 min) only pokes the DO, which: checks the merged quake list (new M4.5+ in the Taiwan box, ≤ 6 h old, not already alerted by fingerprint);
   if there are CCG subscribers, looks at the AIS vessels in the DO for a CCG-looking one inside 20–27.5°N 116–124.5°E (heuristic: name HAIJING / CHINA COAST GUARD / CCG nnnn / 海警,
   or ship type 55 with MMSI 412/413/414); computes the next ISS pass per subscriber location (0.25° cells, CelesTrak TLE cached 6 h) and pushes when it starts in 1–7 min.
   Dedupe state lives in DO storage, not KV.
