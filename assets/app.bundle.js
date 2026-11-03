@@ -4117,6 +4117,7 @@ void main() {
     ["🌏 地震多來源即時合併　", "中央氣象署（含小規模地震）+ USGS + EMSC + GFZ，每 2 分鐘更新並去重，以氣象署為準；每筆標示來源，推播不重複。"],
   ];
   function srcLabel(q) { return (q.srcs && q.srcs.length ? q.srcs : [q.src || "USGS"]).join("·"); }
+  function srcShort(q) { var a = q.srcs && q.srcs.length ? q.srcs : [q.src || "USGS"]; return a[0] + (a.length > 1 ? " +" + (a.length - 1) : ""); }
   function srcMags(q) { var all = [{ src: q.src || "USGS", mag: q.mag }].concat(q.others || []); return all.length > 1 ? all.map(function (o) { return o.src + " M" + Number(o.mag).toFixed(1); }).join(" · ") : ""; }
   function quakeAgo(t) { var m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? m + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; }
 
@@ -5222,7 +5223,7 @@ void main() {
           h("em", { className: "ge-mag", style: { background: quakeCss(q.mag) } }, "M" + q.mag.toFixed(1)),
           h("span", { className: "ge-pass-main" },
             h("b", null, q.place),
-            h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --") + " · " + srcLabel(q)))));
+            h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --") + " · " + srcShort(q)))));
       })));
       else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ earthquakes recorded around Taiwan in the last 30 days."));
       bits.push(h("p", { key: "src", className: "ge-src" }, "來源 " + (quakes.source || "USGS") + "（合併去重，同一事件以 CWA 優先；每 2 分鐘更新 · live feed refreshes every 2 min）· 資料來源：交通部中央氣象署 CWA · USGS (public domain) · EMSC-CSEM (CC BY 4.0) · GFZ GEOFON (CC BY 4.0) · 20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago" + (quakes.sources && quakes.sources.CWA && !quakes.sources.CWA.okAt ? " · ⚠ CWA 暫時無資料，目前僅顯示國際來源 (M4.5+)" : "") + " · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
