@@ -16,7 +16,7 @@
 
 | 來源 | 用法 | 授權 / 條款 |
 |---|---|---|
-| [adsb.lol](https://adsb.lol)（主要） | `https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}`，nm 最大 250；用 2 個圓（25.3°N 121.0°E 與 22.6°N 120.8°E，各 250 nm）涵蓋台灣與周邊，依 `hex` 去重，再裁切到前端要求的範圍 | 資料以 **ODbL 1.0** 釋出（© adsb.lol contributors）。使用需**署名**並維持相同授權散布衍生資料庫；本站在介面頁尾與航班面板標示 |
+| [adsb.lol](https://adsb.lol)（主要） | `https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}`，nm 最大 250；（2026-11-04 起）用 9 個圓（台灣 25.3°N 121.0°E、22.6°N 120.8°E 加上呂宋、香港、南海南部、沖繩、九州–關西、東京、北海道，各 250 nm，見下方「涵蓋範圍」）涵蓋 0–45°N、105–145°E，依 `hex` 去重，再裁切到固定範圍並限制 800 架 | 資料以 **ODbL 1.0** 釋出（© adsb.lol contributors）。使用需**署名**並維持相同授權散布衍生資料庫；本站在介面頁尾與航班面板標示 |
 | [adsb.fi](https://adsb.fi)（備援） | `https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}`；限制 **1 request/秒**（Worker 內以間隔 1.1 秒序列化，且只在某個圓 adsb.lol 失敗時才呼叫） | adsb.fi Open Data：**僅限非商業使用**，需署名 |
 | [OpenSky Network](https://opensky-network.org)（最後手段） | `https://opensky-network.org/api/states/all`（匿名每日約 400 credits） | 見 OpenSky 使用條款（研究／非商業） |
 
@@ -46,7 +46,7 @@
 |---|---|---|---|---|
 | **CWA E-A0015/E-A0016**（S3 鏡像） | 最完整：有感地震含 M<4 的小區域有感地震 | 發震後約 6 分鐘（CWA 發布時間）＋ ≤ 2 分鐘輪詢 | 政府資料開放授權條款第 1 版；「資料來源：交通部中央氣象署」 | ✅ 主要、**權威** |
 | CWA REST API（有 key） | 同上 | — | 同上 | ⚠ 從 Cloudflare（含台灣放置 Worker）被 WAF 擋；只有 GitHub Actions 能用 → 備援 |
-| USGS FDSN geojson | 約 M4.5+（國際目錄） | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | 公有領域 | ✅ |
+| USGS FDSN geojson | 約 M4.5+（國際目錄）；2026-11-04 起另加全範圍 0–45°N 105–145°E M4.5+ 查詢 | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | 公有領域 | ✅ |
 | EMSC-CSEM SeismicPortal FDSN | 約 M4.5+ | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | CC BY 4.0（需標示、不得鏡像／大量複製） | ✅（UI 與 README 標示；WebSocket 未採用：免費 Worker 無法長連線，輪詢已足夠） |
 | GFZ GEOFON FDSN text | 約 M4.5+ | 未實測（通常發震後數分鐘）；每 2 分鐘輪詢 | CC BY 4.0 | ✅ |
 | JMA `list.json`、P2PQuake | 只涵蓋日本國內震度資訊，台灣周邊幾乎沒有 | — | — | ❌ 無用 |
@@ -107,15 +107,29 @@
 **架構 Architecture：** 瀏覽器 → `GET /api/ships`（自己的 Cloudflare Worker）→ Durable Object `Hub`（彙整後存入 DO storage、保留 30 分鐘；最多儲存 4,000 艘、回應最多 2,500 艘，優先順序：CCG 疑似 > 貨／油／客輪等 > 移動中的漁船／未知型別 > 靜止者）。資料來源：收集器（aisstream ＋ MPB）→ `POST /api/ships/ingest`（Bearer `INGEST_TOKEN`）；Worker 自己直連 `wss://stream.aisstream.io/v0/stream` 只是備援（目前會被 aisstream 中斷）。API key 是 Worker secret `AISSTREAM_API_KEY`，從不出現在前端。沒有 key、尚未部署或請求失敗時，前端自動顯示橘色 **DEMO DATA**（沿真實航道生成的示範船隻）。
 
 * **（2026-11-03 更新，規則以此為準）** 中國海警（CCG）判斷規則 `ccgWhy()`（`proxy/src/ais.mjs`）：① 名稱：`HAIJING`／`ZHONGGUO HAIJIAN`／`CHINA COAST GUARD`（含 `CHINACOASTGUARD2302`）／`CCG nnnn`／`海警`；② `block`：MMSI 以 **413875** 開頭（實測海警船常用的區段，**觀察而非官方配賦**；漁船 type 30 與名稱含 HAIXUN 者不套用）；③ `known`：這個 MMSI 先前曾用海警船名出現過（Hub 把 MMSI 記在 KV `ccg:known`，最多 400 筆、180 天，寫入節流為 5 分鐘一次、僅在出現新 MMSI 或 3 天更新一次時寫）。**只有「type 55 + 412/413/414 前綴」而無上述證據的船不再叫海警**，改為較保守的「政府船舶」（`isGov()`，琥珀色、無警示標籤、不推播），例如 `XIA MEN HAI YANG 01`、HAIXUN 巡邏船。船名中的艦號可解出所屬分局（`decodeCcgHull()`：5 碼＝省級分局，例如 14530→福建；4 碼＝直屬局，例如 2xxx→寧波（二局）、3xxx→廣州、5xxx→三亞…）——依公開的編號規則，僅供參考。以下為舊版說明：AIS 船名含 `HAIJING`／`HAI JING`／`ZHONGGUO HAIJIAN`／`CHINA COAST GUARD`（含無空格的 `CHINACOASTGUARD2302`）／`CCG nnnn`／`海警`（**名稱比對一律成立**），或「船型 55（執法）＋中國 MMSI 前綴 412/413/414」（**僅靠前綴的比對**）。僅靠前綴時：`Ship_and_Cargo_Type 30`（漁船）一律排除，名稱含 `HAIXUN`（海事局巡邏船，同為 type 55）也排除。AIS 沒有「海警」欄位，所以可能漏報或誤報；介面與推播內文都標示「非官方確認」。
-* 地震：USGS `4.5_day.geojson`（公開、無 key），範圍 20–27.5°N、118–124.5°E、M ≥ 4.5、6 小時內的新事件。
+* 地震推播：台灣框 20–27.5°N、118–124.5°E 內 M ≥ 4.5、6 小時內的新事件（多來源去重）；全範圍 0–45°N、105–145°E 其他地區只推 M ≥ 6.5（2026-11-04 起）。
 * ISS／衛星過境：CelesTrak TLE（`stations`、`visual`；Worker 端只抓 ISS 的單筆 TLE，快取 6 小時）＋ satellite.js (SGP4)。「可能看得到」＝最高仰角 ≥ 10°、衛星受日照（圓柱地影模型）且觀測者太陽高度 ≤ −6°。這是預測，不保證（未計亮度、天氣、TLE 誤差）。
 * Web Push：標準 Web Push（RFC 8030/8291/8292）；VAPID 私鑰只存在 Worker secret `VAPID_PRIVATE_KEY`。訂閱資料存 Cloudflare KV；ISS 提醒才會儲存「四捨五入到約 1 公里」的位置。iOS／iPadOS 需 16.4+ 且必須「加入主畫面」後從圖示開啟。
+
+## 涵蓋範圍 Coverage（2026-11-04 起：0–45°N、105–145°E）
+
+由原本的台灣周邊（約 18–29°N、114–128°E）擴大到南海、西太平洋（到約 145°E）與日本（到 45°N）。**免費方案的限制**（Workers 免費方案每次呼叫 10 ms CPU、每次呼叫 50 個子請求；Durable Object 每次呼叫 30 s CPU）決定了下列做法：
+
+| 圖層 | 做法 | 上限／限制 |
+|---|---|---|
+| 航班（adsb.lol） | adsb.lol 最大半徑 250 nm，無法無縫覆蓋 45°×40° 的範圍（需約 50 個圓）。改用 9 個圓：台灣北／南（原有，**僅這兩個**在失敗時退到 adsb.fi）、呂宋（15.5°N 120.5°E）、香港／珠江口（21.0°N 112.5°E）、南海南部（8.5°N 112.5°E，稀疏）、沖繩（26.5°N 127.5°E）、九州–關西（34.0°N 132.5°E）、東京（37.0°N 139.5°E）、北海道（42.5°N 142.5°E）。抓取與 JSON 解析改在 Hub Durable Object 內（單飛、8 秒記憶、失敗時回傳 5 分鐘內的舊資料），前端 Worker 只串流位元組；查詢字串中的範圍被忽略（固定一個快取鍵 `v=2`，避免被拿來放大上游請求） | 最多 **800** 架（約 190 B/架，gzip 後約 30 KB）：疑似共機優先、台灣核心區（18–29°N、114–128°E）全留、其餘依高度（巡航段穩定、畫面不閃）。圓與圓之間、海上沒有 ADS-B 接收站的地方本來就沒有資料 |
+| 船舶（aisstream） | `AIS_BBOX` = 0–45°N、105–145°E（`proxy/src/ais.mjs`、`scripts/collect-once.mjs`、`scripts/ais-collector.mjs`、`.github/workflows/collector.yml`）。收集器每次上傳最多 7,500 則訊息（台灣核心區優先），Worker 每次最多接收 8,000 則 | 儲存 4,000 艘、回應 2,500 艘；排序＝疑似海警／共軍 > 政府船舶 > 貨／油／客輪（移動中先）> 漁船／未知；**台灣核心區以外同級船隻排後 0.25 級**，所以台灣周邊優先，日本／南海的商船仍會出現。**航港局 MPB 仍只有臺灣海域（`MPB_BBOX` 19–28°N、116–126°E），無法擴大** |
+| 地震 | USGS／EMSC／GFZ 每個來源兩個查詢：台灣框 20–27.5°N、118–124.5°E（不限規模，與以前相同）＋全範圍 0–45°N、105–145°E（**M4.5+**，`limit=150`），依 id 合併；Worker 回應最多 220 筆。前端另直接查 USGS：台灣 M3+ 30 天、全範圍 M4.5+ 14 天（`limit=250`），地圖與清單最多 400 筆。**氣象署（CWA）仍只有台灣** | 全範圍只收 M4.5+，避免日本的小地震擠掉台灣的 M3 |
+| 推播 | 仍以台灣為主：台灣框 M4.5+；全範圍其他地區只有 **M6.5+**（標題「🌏 區域強震」）。海警（CCG）推播仍只看台灣周邊（20–27.5°N、116–124.5°E） | 日本 M4.5–6.4 不會推播（測試 `pickAlertQuakes`） |
+| 預設畫面 | 「東亞廣域」中心 22.5°N 125°E，鏡頭距離 4.0（手機）／3.1（寬螢幕）；「台灣上空」按鈕回到台灣。縮放範圍不變（最近 1.06、最遠 8） | |
+
+`/api/health`：仍為「0 艘船、MPB 超過 15 分鐘、binding 缺漏」才回 503，擴大範圍不影響。
 
 ## App 的行為 / App behaviour
 
 * 航班：先打 `openskyBase`（預設官方）。失敗（CORS／網路／逾時／429）→ 顯示橘色 **DEMO DATA** 徽章並用示範航班，之後以退避方式重試（60 s → 10 min；429 則依 `X-Rate-Limit-Retry-After-Seconds`，讀不到就 5 分鐘）。成功時每 15 秒更新（頁面在背景時暫停），並在兩次更新之間以航向與速度推算位置。
 * 因為匿名每日只有 400 credits，持續 15 秒更新大約 100 分鐘就會用完；用完後會自動退避並顯示 DEMO DATA。想穩定運作請部署 `proxy/cloudflare-worker.js`（會把 10 秒內的請求合併成一次上游呼叫），再把 `assets/config.js` 的 `openskyBase` 指到你的 worker。目前已部署為 `https://gods-eye-opensky-proxy.numenaslan.workers.dev/api`（CORS 僅允許 `https://numenaslan-cell.github.io` 與 localhost；要換來源請改 `proxy/cloudflare-worker.js` 的 `ALLOWED_ORIGINS`）。
-* 衛星：CelesTrak TLE（預設 `active`，約 1.6 萬顆）→ satellite.js (SGP4) 每 5 秒推算；顯示總數、台灣範圍（經緯度框 21.5–26.5°N、119–123°E）正上方的衛星、以及 ISS 位置。失敗則退回 `stations`，再失敗才用示範資料。
+* 衛星：CelesTrak TLE（預設 `active`，約 1.6 萬顆）→ satellite.js (SGP4) 每 5 秒推算；顯示總數、台灣範圍（`twBox`，經緯度框 21.5–26.5°N、119–123°E）正上方的衛星、以及 ISS 位置。失敗則退回 `stations`，再失敗才用示範資料。
 
 ## 授權 / Licences of bundled third-party material
 

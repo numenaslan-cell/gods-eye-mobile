@@ -1,7 +1,7 @@
 /**
  * God's Eye View // ORB-7 — Cloudflare Worker (free plan).
  *
- *   GET  /api/flights      flights around Taiwan: adsb.lol -> adsb.fi -> OpenSky, normalised, 10 s Cache API
+ *   GET  /api/flights      flights over 0-45N 105-145E (9 adsb.lol circles, <= 800 aircraft; adsb.fi/OpenSky fallbacks), collected in the Hub DO, 10 s Cache API
  *   GET  /api/states/all   OpenSky CORS proxy (10 s edge cache; legacy route, kept as the client's fallback)
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
@@ -29,7 +29,7 @@ import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
 import { cwaData, mergeQuakes } from "./cwa.mjs";
 import { fetchCga } from "./cga.mjs";
 import { parseQuakeZip, s3Get, s3Warnings, s3Typhoons } from "./cwas3.mjs";
-import { quakeUrls, parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint } from "./quakes.mjs";
+import { quakeUrls, quakeUrlSets, mergeById, isFarQuake, parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint } from "./quakes.mjs";
 
 const UPSTREAM = "https://opensky-network.org/api";
 const SITE = "https://numenaslan-cell.github.io/gods-eye-mobile/";
@@ -68,18 +68,18 @@ export default {
     const p = url.pathname;
 
     if (request.method === "GET" && p === "/api/flights") {
-      const num = (k, d) => { const v = parseFloat(url.searchParams.get(k)); return isFinite(v) ? Math.round(v * 10) / 10 : d; };
-      const box = { lamin: num("lamin", FLIGHT_BOX.lamin), lomin: num("lomin", FLIGHT_BOX.lomin), lamax: num("lamax", FLIGHT_BOX.lamax), lomax: num("lomax", FLIGHT_BOX.lomax) };
+      // One fixed region (FLIGHT_BOX 0-45N 105-145E; query-string boxes are ignored => one cache key, no upstream fan-out abuse). The 10 adsb.lol circles are fetched
+      // and parsed inside the Hub Durable Object (30 s CPU, single-flight, 8 s memo); this front Worker (10 ms CPU on the free plan) only streams bytes.
       const cache = typeof caches !== "undefined" ? caches.default : null;
-      const key = new Request(url.origin + "/api/flights?" + [box.lamin, box.lomin, box.lamax, box.lomax].join(","));
-      let body = null;
-      if (cache) { const hit = await cache.match(key); if (hit) body = await hit.text(); }
-      if (body == null) {
-        try { body = JSON.stringify(await collectFlights({ box, openskyBase: UPSTREAM })); }
-        catch (e) { return json(cors, { error: String((e && e.message) || e).slice(0, 300) }, 502); }
-        if (cache) { const put = cache.put(key, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=10" } })); if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put; }
-      }
-      return new Response(body, { status: 200, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=10" }) });
+      const key = new Request(url.origin + "/api/flights?v=2");
+      if (cache) { const hit = await cache.match(key); if (hit) return new Response(hit.body, { status: 200, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=10", "X-Cache": "HIT" }) }); }
+      const hubF = env.HUB ? env.HUB.get(env.HUB.idFromName("main")) : null;
+      if (!hubF) return json(cors, { error: "no hub" }, 503);
+      const r = await hubF.fetch("https://hub/flights");
+      if (!r.ok) return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "no-store" }) });
+      const res = new Response(r.body, { status: 200, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=10" }) });
+      if (cache) { const put = cache.put(key, res.clone()); if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put; }
+      return res;
     }
     if (request.method === "GET" && p === "/api/states/all") {
       let upstream;
@@ -217,6 +217,7 @@ export class Hub {
     const path = new URL(request.url).pathname;
     try {
       if (path === "/ships") return this.shipsResponse();
+      if (path === "/flights") return this.flightsResponse();
       if (path === "/ingest") return this.ingest(request);
       if (path === "/ingest-mpb") return this.ingestMpbRaw(request);
       if (path === "/mpb-note") { let b = {}; try { b = await request.json(); } catch { /* none */ } this.mpbHeal = { ...(this.mpbHeal || {}), at: Date.now(), ...b }; return new Response("{}"); }
@@ -301,7 +302,7 @@ export class Hub {
 
   async ingest(request) {
     let body; try { body = await request.json(); } catch { return new Response(JSON.stringify({ error: "bad json" }), { status: 400 }); }
-    const msgs = Array.isArray(body && body.messages) ? body.messages.slice(0, 5000) : [];
+    const msgs = Array.isArray(body && body.messages) ? body.messages.slice(0, 8000) : [];
     const mpb = Array.isArray(body && body.ships) ? body.ships.slice(0, 8000) : []; // pre-normalised MPB (Taiwan AIS) records from the collector
     const now = Date.now(); let n = 0, m = 0;
     if (Array.isArray(body && body.messages)) { this.collectorAt = now; await this.ctx.storage.put("collectorAt", now); if (msgs.length) { this.aisAt = now; await this.ctx.storage.put("aisAt", now); } } // GitHub Actions collector heartbeat / aisstream freshness
@@ -387,15 +388,20 @@ export class Hub {
     try {
       if (!this.cwaIng) this.cwaIng = (await this.ctx.storage.get("cwaIngest")) || {};
       const jobs = [];
-      const urls = quakeUrls(now);
+      const urlSets = quakeUrlSets(now); // [Taiwan box, any magnitude] + [wide region (SCS / W Pacific / Japan), M4.5+]
       for (const src of ["USGS", "EMSC", "GFZ"]) jobs.push((async () => {
         const S = Q.src[src] = Q.src[src] || {}, t0 = Date.now(); S.at = now;
-        try {
-          const r = await fetch(urls[src], { headers: { Accept: "application/json, text/plain", "User-Agent": "gods-eye-view/1.0 (+https://numenaslan-cell.github.io/gods-eye-mobile/)" }, signal: AbortSignal.timeout(9000), cf: { cacheTtl: 0 } });
-          if (r.status === 204) { Q.ev[src] = []; S.okAt = Date.now(); S.err = null; S.n = 0; S.ms = Date.now() - t0; rep[src] = 0; return; }
+        const one = async (u) => {
+          const r = await fetch(u, { headers: { Accept: "application/json, text/plain", "User-Agent": "gods-eye-view/1.0 (+https://numenaslan-cell.github.io/gods-eye-mobile/)" }, signal: AbortSignal.timeout(9000), cf: { cacheTtl: 0 } });
+          if (r.status === 204) return [];
           if (!r.ok) throw new Error("HTTP " + r.status);
-          const list = src === "GFZ" ? parseGfz(await r.text()) : (src === "USGS" ? parseUsgs : parseEmsc)(await r.json());
-          Q.ev[src] = list.slice(0, 100); S.okAt = Date.now(); S.err = null; S.n = list.length; S.ms = Date.now() - t0; rep[src] = list.length;
+          return src === "GFZ" ? parseGfz(await r.text()) : (src === "USGS" ? parseUsgs : parseEmsc)(await r.json());
+        };
+        try {
+          const res = await Promise.allSettled(urlSets.map((u) => one(u[src])));
+          if (res[0].status === "rejected") throw res[0].reason; // the Taiwan query is the one that must work; a failing wide query only drops the outer region for this tick
+          const list = mergeById(res.filter((x) => x.status === "fulfilled").map((x) => x.value), 220);
+          Q.ev[src] = list; S.okAt = Date.now(); S.err = res[1].status === "rejected" ? "wide: " + String((res[1].reason && res[1].reason.message) || res[1].reason).slice(0, 80) : null; S.n = list.length; S.ms = Date.now() - t0; rep[src] = list.length;
         } catch (e) { S.err = String((e && e.message) || e).slice(0, 100); rep[src] = "err:" + S.err; }
       })());
       jobs.push(this.cwaCron(now, Q, rep));
@@ -458,7 +464,7 @@ export class Hub {
     let via = null; try { via = ing ? JSON.parse(ing.body).via || "collector" : null; } catch { /* ignore */ }
     for (const src of ["USGS", "EMSC", "GFZ"]) { const S = Q.src[src] || {}; const lat = []; for (const q of Q.ev[src] || []) if (q.t > Q.since && Q.fs[q.id]) lat.push(Math.round((Q.fs[q.id] - q.t) / 60000)); lat.sort((a, b) => a - b); sources[src] = { okAt: S.okAt || null, err: S.err || null, n: S.n != null ? S.n : null, firstSeenLagMin: lat.length ? lat : undefined }; }
     sources.CWA = { okAt: ing ? ing.at : null, via, cronOkAt: (Q.src.CWA || {}).okAt || null, err: (Q.src.CWA || {}).err || null, extraErr: (Q.src.CWA || {}).extraErr || null };
-    const okAts = Object.values(sources).map((x) => x.okAt || 0), merged = this.mergedQuakes(now).slice(0, 150);
+    const okAts = Object.values(sources).map((x) => x.okAt || 0), merged = this.mergedQuakes(now).slice(0, 220);
     const body = JSON.stringify({ time: now, updated: Math.max(0, ...okAts), sources, count: merged.length, quakes: merged });
     this._qlive = { at: now, body }; return body;
   }
@@ -527,6 +533,17 @@ export class Hub {
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
     return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, aisAgeSec: this.aisAt ? Math.round((now - this.aisAt) / 1000) : null, collectorAgeSec: this.collectorAt ? Math.round((now - this.collectorAt) / 1000) : null, mpbStale: !this.mpbAt || now - this.mpbAt > MPB_STALE_SEC * 1000, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+  }
+
+  /** Flights for the whole region: single-flight + 8 s memo, stale copy (<= 5 min) when every source fails. Runs here (30 s CPU) because 10 circles of adsb.lol JSON are too much for the 10 ms front Worker. */
+  async flightsResponse() {
+    const H = { "Content-Type": "application/json" }, now = Date.now(), F = this._fl;
+    if (F && now - F.at < 8000) return new Response(F.body, { headers: H });
+    if (!this._flP) this._flP = (async () => { try { const body = JSON.stringify(await collectFlights({ box: FLIGHT_BOX, openskyBase: UPSTREAM })); this._fl = { at: Date.now(), body }; return null; } catch (e) { return String((e && e.message) || e).slice(0, 300); } finally { this._flP = null; } })();
+    const err = await this._flP;
+    if (!err && this._fl) return new Response(this._fl.body, { headers: H });
+    if (this._fl && Date.now() - this._fl.at < 300000) return new Response(this._fl.body, { headers: H });
+    return new Response(JSON.stringify({ error: err || "flights unavailable" }), { status: 502, headers: H });
   }
 
   async collect(ms = COLLECT_MS) {
@@ -644,8 +661,8 @@ export class Hub {
     const cand = pickAlertQuakes(live, seen, now);
     if (first) { await this.ctx.storage.put("quakeSeen2", cand.map(fingerprint)); return "seeded " + cand.length; }
     for (const q of cand) {
-      const label = q.src === "CWA" ? "（中央氣象署）" : "（" + q.src + " 速報，氣象署報告可能稍後發布）";
-      await push(list, { title: "🌏 台灣周邊地震 M" + q.mag.toFixed(1) + label, body: (q.report || q.place) + " · 深度 " + Math.round(q.depthKm) + " km · 來源 " + q.srcs.join("+"), tag: "quake-" + Math.round(q.t / 300000), url: q.url || SITE }, { urgency: "high", ttl: 3600 });
+      const far = isFarQuake(q), label = far ? "（" + q.srcs.join("+") + "）" : q.src === "CWA" ? "（中央氣象署）" : "（" + q.src + " 速報，氣象署報告可能稍後發布）";
+      await push(list, { title: (far ? "🌏 區域強震 M" : "🌏 台灣周邊地震 M") + q.mag.toFixed(1) + label, body: (q.report || q.place) + " · 深度 " + Math.round(q.depthKm) + " km · 來源 " + q.srcs.join("+"), tag: "quake-" + Math.round(q.t / 300000), url: q.url || SITE }, { urgency: "high", ttl: 3600 });
       seen.push(fingerprint(q));
     }
     if (cand.length) await this.ctx.storage.put("quakeSeen2", seen.slice(-100));

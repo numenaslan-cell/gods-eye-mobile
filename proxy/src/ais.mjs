@@ -1,8 +1,9 @@
 import { ccgHull, decodeCcgHull } from "./intel.mjs";
 /* AIS helpers: merge aisstream.io messages into a per-MMSI map; China Coast Guard heuristic. Pure functions. */
-// Taiwan and neighbouring waters. aisstream's terrestrial coverage right around Taiwan is almost empty (measured: 1 vessel / 2 min inside 20–27.5N 118–124.5E),
-// while Hong Kong / S. China and Japan are well covered, so the box reaches out to include them.
-export const AIS_BBOX = { lamin: 18.0, lomin: 108.0, lamax: 34.0, lomax: 132.0 };
+// Coverage area (2026-11-04): South China Sea, Taiwan, the western Pacific out to 145E and Japan up to 45N. aisstream's terrestrial coverage right around Taiwan is almost empty
+// (measured: 1 vessel / 2 min inside 20–27.5N 118–124.5E), while Hong Kong / S. China, the Philippines and Japan are well covered. MPB (Taiwan AIS) stays Taiwan-only (MPB_BBOX).
+export const AIS_BBOX = { lamin: 0.0, lomin: 105.0, lamax: 45.0, lomax: 145.0 };
+export const CORE_BBOX = { lamin: 18.0, lomin: 114.0, lamax: 29.0, lomax: 128.0 }; // Taiwan + Strait + east coast: its vessels outrank equally-interesting ones elsewhere when the list is capped
 export const AIS_TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
 
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
@@ -45,8 +46,9 @@ export function shipRank(s) {
   if (isCcg(s) || isPlan(s)) return 0;
   if (isGov(s)) return 0.5;
   const t = s.type || 0, moving = s.sog != null && s.sog > 0.5;
-  if (t === 30 || t === 0) return moving ? 3 : 4; // fishing / type unknown (mostly small boats)
-  return 1 + (moving ? 0 : 0.5);
+  const far = s.lat != null && (s.lat < CORE_BBOX.lamin || s.lat > CORE_BBOX.lamax || s.lon < CORE_BBOX.lomin || s.lon > CORE_BBOX.lomax) ? 0.25 : 0; // outside the Taiwan core: a notch behind
+  if (t === 30 || t === 0) return (moving ? 3 : 4) + far; // fishing / type unknown (mostly small boats)
+  return 1 + (moving ? 0 : 0.5) + far;
 }
 
 export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {

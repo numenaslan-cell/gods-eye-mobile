@@ -15,7 +15,9 @@ const WORKER = ((process.env.WORKER_URL || "").trim() || "https://gods-eye-opens
 const AIS_SEC = process.env.AIS_SEC === undefined ? 60 : +process.env.AIS_SEC;
 const MPB_URL = process.env.MPB_URL || "https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx";
 const MB = (process.env.MPB_BBOX || "19,116,28,126").split(",").map(Number), MPB_BOX = { lamin: MB[0], lomin: MB[1], lamax: MB[2], lomax: MB[3] };
-const BB = (process.env.BBOX || "18,108,34,132").split(",").map(Number);
+const BB = (process.env.BBOX || "0,105,45,145").split(",").map(Number); // South China Sea + Taiwan + W Pacific (to 145E) + Japan (to 45N): lamin,lomin,lamax,lomax
+const CORE = (process.env.CORE_BBOX || "18,114,29,128").split(",").map(Number); // Taiwan core: its messages go first when the upload is capped
+const MAX_MSGS = +(process.env.MAX_MSGS || 7500); // the Worker keeps at most 8000 messages per ingest
 const TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const scrub = (s) => [TOKEN, CWA_KEY, AIS_KEY].filter(Boolean).reduce((t, k) => t.split(k).join("***"), String(s));
@@ -75,8 +77,15 @@ async function doAis() {
   });
   summary.ais = { opened, confirmed, msgs: total, close: closed };
   if (!buf.size) { log("aisstream: no messages (opened", opened, "confirmed", confirmed, "close", closed + ") - best effort, not fatal"); return; }
-  const j = await withRetry(() => post("/api/ships/ingest", { messages: [...buf.values()] }));
-  summary.ais.ingest = j; log("aisstream", total, "msgs ->", buf.size, "unique ->", JSON.stringify(j));
+  // Wide box = thousands of vessels per minute: keep the latest message per vessel+type (buf), Taiwan-core vessels first, positions before static data, capped at MAX_MSGS.
+  const lat = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Latitude != null ? b.Latitude : m.MetaData && (m.MetaData.latitude != null ? m.MetaData.latitude : m.MetaData.Latitude); return typeof v === "number" ? v : null; };
+  const lon = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Longitude != null ? b.Longitude : m.MetaData && (m.MetaData.longitude != null ? m.MetaData.longitude : m.MetaData.Longitude); return typeof v === "number" ? v : null; };
+  const pri = (m) => { const a = lat(m), o = lon(m), core = a != null && o != null && a >= CORE[0] && a <= CORE[2] && o >= CORE[1] && o <= CORE[3]; return (core ? 0 : 2) + (a == null ? 1 : 0); };
+  let all = [...buf.values()]; const uniq = all.length;
+  if (all.length > MAX_MSGS) all = all.map((m) => [pri(m), m]).sort((x, y) => x[0] - y[0]).slice(0, MAX_MSGS).map((x) => x[1]);
+  summary.ais.uniqueMsgs = uniq; summary.ais.sent = all.length;
+  const j = await withRetry(() => post("/api/ships/ingest", { messages: all }));
+  summary.ais.ingest = j; log("aisstream", total, "msgs ->", uniq, "unique ->", all.length, "sent ->", JSON.stringify(j));
 }
 async function verify() {
   const t0 = Date.now(), get = async (p) => (await fetch(WORKER + p, { signal: AbortSignal.timeout(30000), headers: { "Cache-Control": "no-cache" } })).json();

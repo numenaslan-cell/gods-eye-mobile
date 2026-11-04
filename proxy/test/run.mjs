@@ -8,9 +8,9 @@ import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, grou
 import { parseCgaRss } from "../src/cga.mjs";
 import { parseMndList, parseMndDetail, parseJsIndex, parseJsTitle, parseJsPdfText, ccgHull, decodeCcgHull, sanitizeJsDetail, sanitizeMndDay, pruneJsEvents, needPdf, plaPublic } from "../src/intel.mjs";
 import { parseQuakeZip, parseQuakeXml, zipEntries, entryTime, s3Warnings, s3Typhoons } from "../src/cwas3.mjs";
-import { parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint, sameEvent, quakeUrls } from "../src/quakes.mjs";
+import { parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint, sameEvent, quakeUrls, quakeUrlSets, mergeById, isFarQuake } from "../src/quakes.mjs";
 import { PLAN_HULLS } from "../src/plahulls.mjs";
-import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex, plaSuspect, inPlaBlock } from "../src/flights.mjs";
+import { collectFlights, normalizeAdsb, hexCountry, dedupeByHex, plaSuspect, inPlaBlock, thinFlights, ADSB_POINTS, FLIGHT_BOX } from "../src/flights.mjs";
 let n = 0; const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok  " + name); });
 
 await ok("RFC 8291 appendix-A test vector (aes128gcm payload encryption)", async () => {
@@ -93,18 +93,27 @@ await ok("flights: adsb.lol normalisation (ground skipped, units, callsign/reg f
   assert.equal(dedupeByHex([[{ id: "a", n: 1 }, { id: "b" }], [{ id: "a", n: 2 }]]).length, 2);
 });
 const lolAc = (hex, lat, lon) => ({ hex, flight: hex.toUpperCase(), alt_baro: 30000, gs: 400, track: 10, lat, lon });
-await ok("flights: both adsb.lol circles merged and deduped by hex; box crop applied", async () => {
+await ok("flights: adsb.lol circles merged and deduped by hex; box crop applied (region 0-45N 105-145E); failed outer circles are only reported as partial", async () => {
   const calls = [];
-  const f = async (u) => { calls.push(u); if (/point\/25\.3\/121/.test(u)) return jr({ ac: [lolAc("aaa111", 25, 121), lolAc("bbb222", 23, 121), lolAc("far999", 40, 140)] }); if (/point\/22\.6\/120\.8/.test(u)) return jr({ ac: [lolAc("bbb222", 23, 121), lolAc("ccc333", 22, 120)] }); throw new Error("unexpected " + u); };
+  const f = async (u) => { calls.push(u); if (/point\/25\.3\/121/.test(u)) return jr({ ac: [lolAc("aaa111", 25, 121), lolAc("bbb222", 23, 121), lolAc("far999", 40, 140), lolAc("out111", 50, 140)] }); if (/point\/22\.6\/120\.8/.test(u)) return jr({ ac: [lolAc("bbb222", 23, 121), lolAc("ccc333", 22, 120)] }); throw new Error("unexpected " + u); };
   const r = await collectFlights({ fetch: f });
-  assert.equal(r.source, "adsb.lol"); assert.deepEqual(r.flights.map((x) => x.id).sort(), ["aaa111", "bbb222", "ccc333"]); assert.equal(r.count, 3);
+  assert.equal(r.source, "adsb.lol"); assert.deepEqual(r.flights.map((x) => x.id).sort(), ["aaa111", "bbb222", "ccc333", "far999"]); assert.equal(r.count, 4); assert.equal(r.total, 4); assert.equal(r.partial.length, ADSB_POINTS.length - 2);
   assert.ok(calls.every((u) => /^https:\/\/api\.adsb\.lol\/v2\/point\/[\d.]+\/[\d.]+\/250$/.test(u)));
 });
-await ok("flights: a failing circle falls back to adsb.fi (aircraft key), no OpenSky call", async () => {
+await ok("flights: thinning keeps PLA suspects, then the Taiwan core box, then the highest outer traffic; 10 circles, at most 800 aircraft", () => {
+  assert.equal(ADSB_POINTS.length, 9); assert.deepEqual(FLIGHT_BOX, { lamin: 0, lomin: 105, lamax: 45, lomax: 145 });
+  const mk = (id, lat, lon, altFt, pla) => ({ id, lat, lon, altFt, ...(pla ? { pla: true } : {}) });
+  const list = [mk("core1", 24, 121, 100), mk("out-hi", 36, 140, 38000), mk("out-lo", 35, 139, 2000), mk("pla", 40, 141, 0, true), mk("core2", 22, 120, 5000)];
+  assert.deepEqual(thinFlights(list, 3).map((f) => f.id), ["pla", "core1", "core2"]);
+  assert.deepEqual(thinFlights(list, 4).map((f) => f.id), ["pla", "core1", "core2", "out-hi"]);
+  assert.equal(thinFlights(list, 10).length, 5);
+  const big = Array.from({ length: 3000 }, (_, i) => mk("h" + i, 30 + (i % 10), 130 + (i % 10), i)); assert.equal(thinFlights(big).length, 800);
+});
+await ok("flights: a failing core circle falls back to adsb.fi (aircraft key), no OpenSky call", async () => {
   const calls = [];
   const f = async (u) => { calls.push(u); if (/adsb\.lol.*25\.3/.test(u)) return jr({}, 429); if (/adsb\.lol/.test(u)) return jr({ ac: [lolAc("ccc333", 22, 120)] }); if (/adsb\.fi.*lat\/25\.3\/lon\/121\/dist\/250/.test(u)) return jr({ aircraft: [lolAc("aaa111", 25, 121)] }); throw new Error("unexpected " + u); };
   const r = await collectFlights({ fetch: f });
-  assert.equal(r.source, "adsb.lol+adsb.fi"); assert.equal(r.count, 2); assert.ok(r.partial[0].includes("429")); assert.ok(!calls.some((u) => /opensky/.test(u)));
+  assert.equal(r.source, "adsb.lol+adsb.fi"); assert.equal(r.count, 2); assert.ok(r.partial[0].includes("429")); assert.equal(calls.filter((u) => /adsb\.fi/.test(u)).length, 1, "only core circles fall back to adsb.fi"); assert.ok(!calls.some((u) => /opensky/.test(u)));
 });
 await ok("flights: everything else down -> OpenSky last resort; all down -> throws", async () => {
   const os = { states: [["71be1f", "KAL123 ", "South Korea", 0, 0, 121.5, 24.1, 10000, false, 230, 45, 2, null, 10500]] };
@@ -329,6 +338,9 @@ await ok("quakes: USGS / EMSC / GFZ real samples parse; same event merges across
   assert.ok(!sameEvent({ t: 0, lat: 24, lon: 121 }, { t: 200000, lat: 24, lon: 121 }) && !sameEvent({ t: 0, lat: 24, lon: 121 }, { t: 0, lat: 26, lon: 121 }));
   assert.equal(mergeQuakeSources({ USGS: U }, { now: Date.parse("2026-11-20T00:00:00Z") }).length, 0, "older than 7 days dropped");
   assert.match(quakeUrls(now).EMSC, /minlat=20&maxlat=27.5&minlon=118&maxlon=124.5&start=2026-10-31/);
+  const [tw, wide] = quakeUrlSets(now); assert.ok(!/minmag/.test(tw.USGS + tw.EMSC + tw.GFZ), "Taiwan query: every magnitude");
+  assert.match(wide.USGS, /minlatitude=0&maxlatitude=45&minlongitude=105&maxlongitude=145.*&minmagnitude=4.5$/); assert.match(wide.EMSC, /minlat=0&maxlat=45&minlon=105&maxlon=145&start=2026-10-31.*&minmag=4.5$/); assert.match(wide.GFZ, /minmagnitude=4.5$/);
+  assert.deepEqual(mergeById([[{ id: "a", t: 2 }, { id: "b", t: 1 }], [{ id: "a", t: 2 }, { id: "c", t: 3 }]]).map((q) => q.id), ["c", "a", "b"]);
 });
 await ok("quake push dedupe: the same event first seen from EMSC, later from CWA, alerts once; M<4.5, old and out-of-region events never alert", () => {
   const now = Date.parse("2026-11-02T03:00:00Z"), t = Date.parse("2026-11-02T02:23:05Z");
@@ -340,7 +352,10 @@ await ok("quake push dedupe: the same event first seen from EMSC, later from CWA
   const other = [{ id: "cwa2", src: "CWA", t: t + 3600000, lat: 24.31, lon: 122.19, mag: 4.6, depthKm: 40, place: "宜蘭" }];
   assert.equal(pickAlertQuakes(mergeQuakeSources({ CWA: other }, { now: now + 3600000 + 60000 }), seen, now + 3600000 + 60000).length, 1, "a different event an hour later does alert");
   const small = [{ id: "c3", src: "CWA", t, lat: 24, lon: 121, mag: 4.4, depthKm: 5, place: "x" }, { id: "c4", src: "CWA", t: t - 7 * 3600000, lat: 24, lon: 121, mag: 5.5, depthKm: 5, place: "x" }, { id: "c5", src: "CWA", t, lat: 30, lon: 130, mag: 6, depthKm: 5, place: "x" }];
-  assert.equal(pickAlertQuakes(mergeQuakeSources({ CWA: small }, { now }), [], now).length, 0);
+  assert.equal(pickAlertQuakes(mergeQuakeSources({ CWA: small }, { now }), [], now).length, 0, "M6.0 off Japan (30N 130E) and old / small Taiwan events never alert");
+  const jp = [{ id: "j1", src: "USGS", t, lat: 36, lon: 140, mag: 5.8, depthKm: 30, place: "Honshu" }, { id: "j2", src: "USGS", t: t - 3600000, lat: 33, lon: 135, mag: 6.6, depthKm: 30, place: "Kii" }, { id: "j3", src: "USGS", t, lat: 52, lon: 160, mag: 7.1, depthKm: 30, place: "Kamchatka" }];
+  const ja = pickAlertQuakes(mergeQuakeSources({ USGS: jp }, { now }), [], now); assert.deepEqual(ja.map((q) => q.id), ["j2"], "outside Taiwan only M6.5+ inside the wide region");
+  assert.ok(isFarQuake(ja[0]) && !isFarQuake({ lat: 24, lon: 121 }));
 });
 
 await ok("CWA S3 mirror: zip central directory + deflate, newest report first, same quake shape as the REST normaliser", async () => {

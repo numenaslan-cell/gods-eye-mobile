@@ -16,7 +16,7 @@ Everything stays on the **Cloudflare free plan** (no paid add-ons).
 > Run it somewhere that stays on (home PC / Raspberry Pi / a VPS whose IP aisstream accepts). Ships stay in the Worker for 30 min after the collector stops.
 
 ## Earthquakes (CWA + USGS + EMSC + GFZ), typhoon, warnings — fresh every 2 minutes, no key, no local machine
-The `*/2` cron calls the Hub's `/quake-cron` (its own invocation): it fetches USGS (FDSN geojson), EMSC (FDSN json) and GFZ (FDSN text) for 20–27.5°N 118–124.5°E, last 3 days, and **CWA's public S3 mirror**
+The `*/2` cron calls the Hub's `/quake-cron` (its own invocation): it fetches USGS (FDSN geojson), EMSC (FDSN json) and GFZ (FDSN text) for 20–27.5°N 118–124.5°E (any magnitude) **plus** 0–45°N 105–145°E (M4.5+ only; a second query per agency, 2026-11-04), last 3 days, and **CWA's public S3 mirror**
 `https://cwaopendata.s3.ap-northeast-1.amazonaws.com/` (`Earthquake/E-A0015-001.zip` + `E-A0016-001.zip` are zips of one XML per report — the Worker reads the zip central directory, inflates only the newest 5 entries and parses the XML with regexes;
 `Warning/W-C0033-001.json`, `Warning/W-C0034-005.json` for warnings/typhoon every ~4 min). All S3 reads are conditional (`If-None-Match` → 304 = no work).
 CWA's REST API (`opendata.cwa.gov.tw`) turns Cloudflare egress away with HTTP 200 + HTML "Request Rejected" even from a Worker placed in `gcp:asia-east1` (tested), so GitHub Actions (`CWA_API_KEY` secret, `scripts/collect-once.mjs`) remains the **backup**: its ingest writes the same `cwaIngest` slot (`POST /api/cwa/ingest`).
@@ -96,9 +96,9 @@ In the app: Alerts tab → enable → "Send test push". On iOS 16.4+ you must fi
 
 ## How it works (free-plan design)
 * `GET /api/ships` → front Worker → Durable Object `Hub` (singleton). If data is older than 90 s the DO opens an outbound WebSocket to
-  `wss://stream.aisstream.io/v0/stream` for ~25 s (box 18–34°N 108–132°E: Taiwan **and neighbouring waters** — coverage inside Taiwan's own waters is almost empty on aisstream, 1 vessel / 2 min measured, while Hong Kong / S. China and Japan are well covered; position + static messages), merges per MMSI, keeps 30 min.
+  `wss://stream.aisstream.io/v0/stream` for ~25 s (box 0–45°N 105–145°E since 2026-11-04 — South China Sea, Taiwan, W Pacific to 145E, Japan to 45N; before: 18–34°N 108–132°E: Taiwan **and neighbouring waters** — coverage inside Taiwan's own waters is almost empty on aisstream, 1 vessel / 2 min measured, while Hong Kong / S. China and Japan are well covered; position + static messages), merges per MMSI, keeps 30 min.
   Heavy work runs in the DO (30 s CPU) so the Worker's 10 ms CPU limit is never an issue.
-* Cron (every 2 min) only pokes the DO, which: checks the merged quake list (new M4.5+ in the Taiwan box, ≤ 6 h old, not already alerted by fingerprint);
+* Cron (every 2 min) only pokes the DO, which: checks the merged quake list (new M4.5+ in the Taiwan box **or M6.5+ anywhere in 0–45°N 105–145°E**, ≤ 6 h old, not already alerted by fingerprint);
   if there are CCG subscribers, looks at the AIS vessels in the DO for a CCG-looking one inside 20–27.5°N 116–124.5°E (heuristic: name HAIJING / CHINA COAST GUARD / CCG nnnn / 海警,
   or ship type 55 with MMSI 412/413/414); computes the next ISS pass per subscriber location (0.25° cells, CelesTrak TLE cached 6 h) and pushes when it starts in 1–7 min.
   Dedupe state lives in DO storage, not KV.

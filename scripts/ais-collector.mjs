@@ -5,7 +5,7 @@
 // connect to it itself. This script connects instead and POSTs batches to  POST <WORKER>/api/ships/ingest  (Bearer INGEST_TOKEN).
 //
 //   AISSTREAM_API_KEY=...  INGEST_TOKEN=...  node scripts/ais-collector.mjs
-//   optional: INGEST_URL (default https://gods-eye-opensky-proxy.numenaslan.workers.dev/api/ships/ingest), FLUSH_SEC (30), BBOX="18,108,34,132"
+//   optional: INGEST_URL (default https://gods-eye-opensky-proxy.numenaslan.workers.dev/api/ships/ingest), FLUSH_SEC (30), BBOX="0,105,45,145"
 //
 // Second source (no key needed): Taiwan MPB AIS (交通部航港局 mpbais.motcmpb.gov.tw, undocumented GeoJSON, ~2.9 MB). It is fetched every MPB_SEC
 // (default 120, minimum 90) seconds, trimmed to the Taiwan box (MPB_BBOX="19,116,28,126") and to the few fields the app needs, and POSTed as {ships:[…]}
@@ -30,7 +30,7 @@ const URL_ = process.env.INGEST_URL || "https://gods-eye-opensky-proxy.numenasla
 const CWA_KEY = process.env.CWA_API_KEY, CWA_SEC = Math.max(120, +process.env.CWA_SEC || 300);
 const CWA_INGEST = process.env.CWA_INGEST_URL || (process.env.INGEST_URL || "https://gods-eye-opensky-proxy.numenaslan.workers.dev/api/ships/ingest").replace(/\/ships\/ingest$/, "/cwa/ingest");
 const FLUSH = Math.max(10, +process.env.FLUSH_SEC || 30) * 1000;
-const BB = (process.env.BBOX || "18,108,34,132").split(",").map(Number);
+const BB = (process.env.BBOX || "0,105,45,145").split(",").map(Number);
 if (!TOKEN || (!KEY && !MPB_ON && !CWA_KEY)) { console.error("INGEST_TOKEN (or ~/.config/gods-eye/ingest.token) is required, plus AISSTREAM_API_KEY unless MPB is enabled"); process.exit(2); }
 const TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
 const log = (...a) => console.log(new Date().toISOString(), ...a);

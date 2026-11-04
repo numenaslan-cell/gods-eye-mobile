@@ -1,9 +1,21 @@
 /* Flights: adsb.lol (primary) -> adsb.fi (fallback, 1 req/s) -> OpenSky (last resort). Normalised to the client's flight format. Pure/injectable. */
-export const ADSB_POINTS = [ // 250 nm is the adsb.lol maximum; two circles cover Taiwan, the Strait, Luzon Strait and the east coast
-  { lat: 25.3, lon: 121.0 }, { lat: 22.6, lon: 120.8 },
+// adsb.lol's maximum radius is 250 nm (463 km), so a 0–45°N / 105–145°E box can't be covered gaplessly with free-plan request budgets (~50 circles).
+// 10 circles cover the places that actually have aircraft: Taiwan + Strait + east coast (`core`, with adsb.fi fallback), Luzon / Philippines, the northern
+// and southern South China Sea, Okinawa, Kyushu–Seto–Osaka, Tokyo–Nagoya and Hokkaido–Tohoku. ADS-B receivers are sparse over open ocean anyway.
+export const ADSB_POINTS = [
+  { lat: 25.3, lon: 121.0, core: true }, { lat: 22.6, lon: 120.8, core: true },
+  { lat: 15.5, lon: 120.5 },   // Luzon / Manila
+  { lat: 21.0, lon: 112.5 },   // Hong Kong / Pearl River Delta / Hainan / northern SCS
+  { lat: 8.5, lon: 112.5 },    // southern SCS (sparse)
+  { lat: 26.5, lon: 127.5 },   // Okinawa / Ryukyu
+  { lat: 34.0, lon: 132.5 },   // Kyushu / Seto / Kansai
+  { lat: 37.0, lon: 139.5 },   // Tokyo / Nagoya / Tohoku south
+  { lat: 42.5, lon: 142.5 },   // Hokkaido / Tohoku north
 ];
 export const ADSB_NM = 250;
-export const FLIGHT_BOX = { lamin: 18, lomin: 114, lamax: 29, lomax: 128 }; // default crop (the client may pass its own lamin/lomin/lamax/lomax)
+export const FLIGHT_BOX = { lamin: 0, lomin: 105, lamax: 45, lomax: 145 }; // the one box the Worker serves (the client's query string is ignored: one cache key, no fan-out abuse)
+export const CORE_BOX = { lamin: 18, lomin: 114, lamax: 29, lomax: 128 };    // the former Taiwan-focused box: always kept in full
+export const MAX_FLIGHTS = 800;                                              // the client draws one mesh per aircraft; ~190 B each => ≲150 KB JSON (~30 KB gzip)
 const KT_MS = 0.514444, FT_FPM = 1; // ft/min already
 
 // ICAO 24-bit address blocks -> country (small table for the region; unknown -> "")
@@ -98,6 +110,14 @@ export function dedupeByHex(lists) {
   return [...m.values()];
 }
 
+/** Cap the payload: suspected-PLA aircraft first, then everything inside the Taiwan core box, then the rest of the region by altitude (cruising traffic is stable
+ *  between polls, so the picture doesn't flicker), ties by hex. */
+export function thinFlights(list, max = MAX_FLIGHTS, core = CORE_BOX) {
+  if (list.length <= max) return list;
+  const rank = (f) => (f.pla ? 0 : inBox(f, core) ? 1 : 2);
+  return list.slice().sort((a, b) => rank(a) - rank(b) || (rank(a) === 2 ? (b.altFt || 0) - (a.altFt || 0) : 0) || (a.id < b.id ? -1 : 1)).slice(0, max);
+}
+
 const inBox = (f, b) => f.lat >= b.lamin && f.lat <= b.lamax && f.lon >= b.lomin && f.lon <= b.lomax;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastFiAt = 0; // adsb.fi allows 1 request / second: serialise within an isolate
@@ -113,8 +133,9 @@ async function getJson(fetchFn, url, ms = 8000, init = {}) {
 }
 
 /**
- * Collect flights. opts: { fetch, box, openskyBase, lolBase, fiBase, now }.
- * Each of the 2 circles is fetched from adsb.lol; a circle that fails is retried on adsb.fi; if no circle yields data at all, OpenSky is used.
+ * Collect flights. opts: { fetch, box, max, openskyBase, lolBase, fiBase, now }.
+ * Each circle (ADSB_POINTS) is fetched from adsb.lol in parallel; a failed `core` circle is retried on adsb.fi; if no circle yields data at all, OpenSky is used.
+ * Runs inside the Hub Durable Object (30 s CPU budget), never in the 10 ms front Worker.
  */
 export async function collectFlights(opts = {}) {
   const f = opts.fetch || fetch, box = opts.box || FLIGHT_BOX;
@@ -127,7 +148,7 @@ export async function collectFlights(opts = {}) {
     used.add("adsb.lol"); lists.push(r.ac.map(normalizeAdsb).filter(Boolean));
   }
   for (const r of lolRes) {
-    if (!r.err) continue;
+    if (!r.err || !r.p.core) continue; // adsb.fi (1 req/s) only backs up the Taiwan core circles
     await fiThrottle();
     try {
       const j = await getJson(f, `${fi}/api/v2/lat/${r.p.lat}/lon/${r.p.lon}/dist/${ADSB_NM}`);
@@ -135,13 +156,14 @@ export async function collectFlights(opts = {}) {
     } catch (e) { errors.push("adsb.fi " + (e.message || e)); }
   }
   let flights = dedupeByHex(lists).filter((x) => inBox(x, box));
-  if (!lists.length) { // last resort: OpenSky
+  if (!lists.length) { // last resort: OpenSky, Taiwan core box only (anonymous credits: area-based)
     try {
-      const q = `lamin=${box.lamin}&lomin=${box.lomin}&lamax=${box.lamax}&lomax=${box.lomax}`;
+      const q = `lamin=${CORE_BOX.lamin}&lomin=${CORE_BOX.lomin}&lamax=${CORE_BOX.lamax}&lomax=${CORE_BOX.lomax}`;
       const j = await getJson(f, (opts.openskyBase || "https://opensky-network.org/api") + "/states/all?" + q, 10000);
       used.add("opensky"); flights = normalizeOpenSky(j);
     } catch (e) { errors.push("opensky " + (e.message || e)); }
   }
   if (!used.size) { const e = new Error("all flight sources failed: " + errors.join("; ")); e.errors = errors; throw e; }
-  return { source: [...used].join("+"), partial: errors.length > 0 && used.size > 0 ? errors : undefined, time: (opts.now || Date.now)(), count: flights.length, flights };
+  const total = flights.length; flights = thinFlights(flights, opts.max || MAX_FLIGHTS);
+  return { source: [...used].join("+"), partial: errors.length > 0 && used.size > 0 ? errors : undefined, time: (opts.now || Date.now)(), count: flights.length, total, flights };
 }
