@@ -18,15 +18,14 @@
   <link rel="preload" as="image" href="assets/textures/earth-day-1k.webp" type="image/webp" fetchpriority="low">
   <link rel="preload" as="image" href="assets/textures/earth-night-1k.webp" type="image/webp" fetchpriority="low">
   <link rel="preconnect" href="https://gods-eye-opensky-proxy.numenaslan.workers.dev" crossorigin>
-  <!-- Scripts are deferred (executed in order after parsing) but discovered immediately by the preload scanner: HTML + CSS + this skeleton paint first.
-       satellite.js v6 (MIT) = SGP4 propagation. Classic scripts (not type=module) so the app also works from file://. -->
-  <script defer src="assets/vendor/satellite.min.js"></script>
-  <script defer src="assets/config.js"></script>
-  <script defer src="assets/live-data.js"></script>
-  <script defer src="assets/passes.js"></script>
-  <script defer src="assets/push.js"></script>
-  <script>if (location.protocol === "file:") document.write('<script defer src="assets/textures.js"><\/script>'); // WebGL refuses file:// images: base64 textures only there</script>
-  <script defer src="assets/app.bundle.js"></script>
+  <!-- The app scripts are PRELOADED here (download starts immediately, in parallel with the CSS) but only EXECUTED after the first paint (see the loader at the end of <body>):
+       the static skeleton below is what paints first, so text/stats appear before any JavaScript runs even on a fast connection. -->
+  <link rel="preload" as="script" href="assets/vendor/satellite.min.js">
+  <link rel="preload" as="script" href="assets/config.js">
+  <link rel="preload" as="script" href="assets/live-data.js">
+  <link rel="preload" as="script" href="assets/passes.js">
+  <link rel="preload" as="script" href="assets/push.js">
+  <link rel="preload" as="script" href="assets/app.bundle.js">
   <meta name="description" content="手機優先的 3D 上帝視角地球儀：南海、台灣、西太平洋到日本（0–45°N、105–145°E）的即時航班、船隻、多來源地震（氣象署＋USGS＋EMSC＋GFZ）、颱風、共機共艦統計、衛星過境與推播提醒；放大自動載入 NASA GIBS 高解析圖磚，飛機／船隻剪影分明，疑似海警／共軍標示（啟發式，非官方辨識）。Mobile-first Taiwan globe from open data: flights, ships, quakes, satellites, zoom-in NASA GIBS tiles.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://numenaslan-cell.github.io/gods-eye-mobile/">
@@ -50,12 +49,33 @@
       <div class="ge-modes"><button type="button" class="ge-btn ge-mode is-on">DAY</button><button type="button" class="ge-btn ge-mode">NVG</button><button type="button" class="ge-btn ge-mode">THERM</button></div>
     </div>
     <div class="ge-mid"></div>
+    <!-- splash text: the largest text block on the first paint (so the page's LCP is this paint, not the later React footer) -->
+    <p style="position:absolute;left:0;right:0;top:30%;margin:0;padding:0 16px;text-align:center;color:#c8ff00;font:700 30px/1.4 var(--mono);letter-spacing:.1em;pointer-events:none">GOD'S EYE VIEW<br>東亞即時情勢地球儀<br><span style="font-size:13px;letter-spacing:.25em;color:rgba(255,255,255,.5)">LOADING ORB-7…</span></p>
     <nav class="ge-chips"><button type="button" class="ge-btn ge-chip is-on">東亞廣域</button><button type="button" class="ge-btn ge-chip">台灣上空</button><button type="button" class="ge-btn ge-chip">台北101</button><button type="button" class="ge-btn ge-chip">桃園機場</button></nav>
     <footer class="ge-credit">DATA: <a href="https://adsb.lol" target="_blank" rel="noopener noreferrer">adsb.lol (ODbL)</a> · <a href="https://adsb.fi" target="_blank" rel="noopener noreferrer">adsb.fi</a> · <a href="https://opensky-network.org" target="_blank" rel="noopener noreferrer">OpenSky</a> · <a href="https://aisstream.io" target="_blank" rel="noopener noreferrer">aisstream.io</a> · <a href="https://mpbais.motcmpb.gov.tw/aismpb/" target="_blank" rel="noopener noreferrer">交通部航港局 MPB</a> · <a href="https://www.mnd.gov.tw/news/plaactlist" target="_blank" rel="noopener noreferrer">國防部 MND</a> · <a href="https://www.mod.go.jp/js/" target="_blank" rel="noopener noreferrer">防衛省統合幕僚監部 (PDL 1.0)</a> · <a href="https://pla-tracker.skyfaring.net" target="_blank" rel="noopener noreferrer">PLA tracker</a> · <a href="https://www.cga.gov.tw" target="_blank" rel="noopener noreferrer">海巡署 CGA</a> · <a href="https://celestrak.org" target="_blank" rel="noopener noreferrer">CelesTrak</a> · <a href="https://earthquake.usgs.gov" target="_blank" rel="noopener noreferrer">USGS</a> · <a href="https://www.seismicportal.eu" target="_blank" rel="noopener noreferrer">EMSC-CSEM (CC BY 4.0)</a> · <a href="https://geofon.gfz.de" target="_blank" rel="noopener noreferrer">GFZ GEOFON (CC BY 4.0)</a> · <a href="https://opendata.cwa.gov.tw" target="_blank" rel="noopener noreferrer">交通部中央氣象署 CWA</a> · <a href="https://earthdata.nasa.gov/gibs" target="_blank" rel="noopener noreferrer">NASA GIBS imagery</a> · <a href="https://github.com/shashwatak/satellite-js" target="_blank" rel="noopener noreferrer">satellite.js</a></footer>
   </div></div></div>
   <script>try{var L=JSON.parse(localStorage.getItem("gods-eye:last"));if(L)[["sk-sats",L.sats],["sk-over",L.over],["sk-f",L.f],["sk-s",L.s]].forEach(function(p){var e=document.getElementById(p[0]);if(e&&typeof p[1]==="number")e.textContent=p[1].toLocaleString("en-US")})}catch(e){}</script>
   <noscript><p style="color:#fff;padding:1rem">This app needs JavaScript.</p></noscript>
 
+  <script>
+    // Load the app after the first paint. Scripts are injected with async=false => they still execute in this order. satellite.js v6 (MIT) = SGP4 propagation.
+    // Classic scripts (not type=module) so the app also works from file://, where the base64 textures.js is added (WebGL refuses file:// images).
+    (function () {
+      var list = ["assets/vendor/satellite.min.js", "assets/config.js", "assets/live-data.js", "assets/passes.js", "assets/push.js"];
+      if (location.protocol === "file:") list.push("assets/textures.js");
+      list.push("assets/app.bundle.js");
+      var started = false;
+      function load() { if (started) return; started = true; list.forEach(function (src) { var s = document.createElement("script"); s.src = src; s.async = false; document.head.appendChild(s); }); }
+      function afterFrame() { requestAnimationFrame(function () { setTimeout(load, 0); }); }
+      function go() {
+        // Wait until the browser has reported the skeleton's paint as the page's LCP candidate (otherwise the React UI can replace it before that is recorded); 2.5 s safety net.
+        var ok = window.PerformanceObserver && PerformanceObserver.supportedEntryTypes && PerformanceObserver.supportedEntryTypes.indexOf("largest-contentful-paint") >= 0;
+        if (ok) { try { new PerformanceObserver(function (l, o) { o.disconnect(); setTimeout(load, 30); }).observe({ type: "largest-contentful-paint", buffered: true }); setTimeout(load, 2500); return; } catch (e) { /* fall through */ } }
+        afterFrame();
+      }
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go); else go();
+    })();
+  </script>
   <script>
     // Offline-capable shell (live data is never cached by the service worker).
     if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
