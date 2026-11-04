@@ -21,7 +21,7 @@
 * 🔍 **放大不模糊（LOD）**：鏡頭拉近時在 4096 px 底圖上疊加 NASA GIBS WMTS 圖磚（日間 Blue Marble Shaded Relief＋Bathymetry、夜間 VIIRS City Lights 2012，z4–z7，最近約 490 m/px），最多 18 塊、LRU 快取並釋放貼圖；renderer 依 `devicePixelRatio`（上限 3，幀時間過長自動降階）、各向異性過濾與 mipmap
 * 🔺 **飛機／船隻剪影一眼分辨**：航空器＝機頭朝航向的飛機剪影，船舶＝船艏朝航向的船殼＋船艛（依類別上色），向量網格、固定螢幕像素大小、DPR 3 依然銳利，近距離隱藏靜止小漁船避免蓋住島嶼
 * ⚠️ **疑似警示標籤**：疑似海警（CCG）、疑似共軍艦（名稱含 海軍／PLA NAVY／PLAN＋艦號，或 MMSI 412/413 且船型 35；漁船不會只靠 MMSI 被標記）、疑似共機（ADS-B 軍用旗標＋中國 ICAO 位址區段／PLA 機型或呼號）皆有永遠顯示的標籤與脈動圈；標籤重疊時自動堆疊
-* ✈️ **台灣周邊即時航班**：由 Worker `/api/flights` 以 [adsb.lol](https://adsb.lol)（ODbL）為主，某個範圍失敗時改用 adsb.fi，最後才用 OpenSky；以 2 個 250 海浬圓涵蓋台灣、依 `hex` 去重、10 秒邊緣快取。每 15 秒更新，兩次更新之間依航向與速度平滑推算；Flight HUD 顯示呼號、高度、速度、航向、升降率，可跟隨單一航班
+* ✈️ **東亞即時航班（0–45°N、105–145°E，2026-11-04 起）**：由 Worker `/api/flights` 以 [adsb.lol](https://adsb.lol)（ODbL）為主，台灣核心圓失敗時改用 adsb.fi，最後才用 OpenSky；以 9 個 250 海浬圓涵蓋南海、台灣、西太平洋與日本，在 Durable Object 內抓取／去重並限制 800 架、10 秒邊緣快取。每 15 秒更新，兩次更新之間依航向與速度平滑推算；Flight HUD 顯示呼號、高度、速度、航向、升降率，可跟隨單一航班
 * 🚢 **台灣周邊船舶（AIS）**：合併**交通部航港局（MPB）臺灣海域船舶即時資訊**與 aisstream.io，依 MMSI 合併；依貨輪／油輪／客輪／漁船／其他上色，**疑似中國海警（CCG）以紅色標示**並有專屬計數／切換鈕；CCG 判斷為名稱＋船型啟發式（名稱含 HAIJING／CHINA COAST GUARD／海警等一律算；僅靠 MMSI 前綴時排除漁船型別 30 與 HAIXUN 海事巡邏船）
 * 🌏 **地震／颱風／警特報（多來源）**：中央氣象署（含小規模有感地震）＋ USGS ＋ EMSC ＋ GFZ 每 2 分鐘合併去重，同一事件以氣象署為準，每筆標示來源；颱風與警特報取自氣象署公開 S3 鏡像（免 key）
 * 🛡️ **PLA 分頁**：**國防部每日官方數字**（共機／進入空域／共艦／公務船＋航跡示意圖連結）與**日本統合幕僚監部**的中國軍艦軍機動向（級別、艦號→艦名、海峽、航向、機型；PDL 1.0 標示出典），由放在台灣的 Cloudflare Worker 抓取（國防部內文頁只認台灣出口），PDF 在 GitHub Actions 用 pdftotext 解析；另有近 7 日趨勢（第三方整理，非官方；頁面明確標示**國防部每日數字才是權威計數**，地圖上的疑似標記只是少數有發訊號者的子集），以及海巡署新聞 RSS 中提到「海警」的項目（30 分鐘快取）
@@ -144,7 +144,7 @@ Public flight, ship, weather and satellite data is abundant but raw (JSON / CSV 
 
 ### Features
 * Mobile-first three.js globe with **DAY / NVG / THERM** modes and a computed day–night terminator
-* **Flights** via the Worker's `/api/flights`: [adsb.lol](https://adsb.lol) (ODbL) first, adsb.fi when a circle fails, OpenSky as last resort; two 250 nm circles cover Taiwan, deduped by `hex`, 10 s edge cache; 15 s client refresh with dead reckoning; flight HUD with follow mode
+* **Flights** via the Worker's `/api/flights`: [adsb.lol](https://adsb.lol) (ODbL) first, adsb.fi when a circle fails, OpenSky as last resort; nine 250 nm circles cover the South China Sea, Taiwan, the W Pacific and Japan (0–45°N, 105–145°E; collected in the Durable Object, capped at 800 aircraft), deduped by `hex`, 10 s edge cache; 15 s client refresh with dead reckoning; flight HUD with follow mode
 * **Ships (AIS):** Taiwan Maritime Port Bureau (MPB, 交通部航港局) feed merged with aisstream.io by MMSI; colour by ship class, **suspected China Coast Guard vessels highlighted in red** with their own counter / cycle button (heuristic: name matches such as HAIJING / CHINA COAST GUARD / 海警 always count; MMSI-prefix-only matches exclude fishing type 30 and HAIXUN maritime-safety patrol ships)
 * **Zoom LOD:** on zoom, NASA GIBS WMTS tiles (Blue Marble Shaded Relief + Bathymetry by day, VIIRS City Lights 2012 by night, z4–z7, ~490 m/px at best) are overlaid on the 4096 px base texture — max 18 tiles, LRU texture cache with `dispose()`, device-pixel-ratio capped at 3 with adaptive step-down, anisotropic filtering and mipmaps
 * **Shape-distinct icons:** aircraft = plane silhouette pointing along heading; ships = hull + deckhouse pointing along course, coloured by class; vector meshes at constant on-screen size (sharp at DPR 3), stationary small boats hidden when zoomed in so the island stays visible

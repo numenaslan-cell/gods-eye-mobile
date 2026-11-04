@@ -1,6 +1,6 @@
 # God's Eye View // ORB-7 🌍🛰️
 
-手機優先的「上帝視角」台灣周邊即時資料地球儀：航班、船舶（AIS）、地震／颱風／警特報、共機日報、衛星與 ISS 過境預測，並支援 Web Push 提醒；放大時自動疊加 NASA GIBS 高解析圖磚，飛機／船隻以不同剪影一眼分辨，疑似海警／共軍艦／共機有「⚠️ 疑似」警示標籤（啟發式，非官方辨識）。
+手機優先的「上帝視角」東亞即時資料地球儀（南海、台灣、西太平洋到日本，0–45°N、105–145°E；預設畫面為「東亞廣域」，台灣周邊仍是重點）：航班、船舶（AIS）、地震／颱風／警特報、共機日報、衛星與 ISS 過境預測，並支援 Web Push 提醒；放大時自動疊加 NASA GIBS 高解析圖磚，飛機／船隻以不同剪影一眼分辨，疑似海警／共軍艦／共機有「⚠️ 疑似」警示標籤（啟發式，非官方辨識）。
 前端是純靜態網頁（GitHub Pages，瀏覽器端不需要任何 API key）；後端只有一支免費方案的 Cloudflare Worker（CORS 代理、資料合併、推播），以及一支跑在一般網路 IP 的資料收集器（見 [`proxy/DEPLOY.md`](proxy/DEPLOY.md)）。
 資料來自**公開資料源**：adsb.lol／adsb.fi／OpenSky（航班）、交通部航港局 MPB＋aisstream（船舶）、中央氣象署／USGS（地震）、第三方整理的國防部日報（PLA）、海巡署 RSS、CelesTrak（衛星）；抓不到時會顯示明顯的橘色 **DEMO DATA** 徽章並改用示範資料。各來源的授權與限制見 [`docs/DATA-SOURCES.md`](docs/DATA-SOURCES.md)。
 
@@ -10,21 +10,26 @@
 > 原本畫面上的 `TOP SECRET // NOFORN` 字樣已改為 `OPEN DATA // PUBLIC FEEDS // DEMO UI`。
 > 航班與衛星資料為公開、非即時保證（延遲／缺漏／被限流都可能發生），**請勿用於導航或任何安全相關用途**。
 
+## 涵蓋範圍與效能（2026-11-04）
+
+* **涵蓋範圍**：緯度 0–45°N、經度 105–145°E（南海、台灣、西太平洋、日本）。航班：9 個 adsb.lol 圓（台灣 2、呂宋、香港／珠江口、南海南部、沖繩、九州–關西、東京、北海道），Worker 的 Durable Object 抓取並限制在 800 架內；船舶：aisstream 範圍同上，儲存 4,000 艘、回應 2,500 艘（台灣核心區同等級優先）；地震：USGS／EMSC／GFZ 台灣範圍不限規模＋全範圍 M4.5+（氣象署仍只有台灣），前端地圖與清單最多 400 筆；預設畫面「東亞廣域」，並有「台灣上空」按鈕。細節與限制見 [`docs/DATA-SOURCES.md`](docs/DATA-SOURCES.md)「涵蓋範圍」。
+* **開啟速度**：HTML 內建靜態骨架（文字與上次統計先顯示）、腳本 `defer`、地球儀在首次繪製後才建立、貼圖由 1.3 MB 內嵌 base64 改為 70 KB 小圖＋閒置時換 750 KB WebP、衛星 TLE（2.7 MB）延後到載入完成後。量測數字見 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
+
 ## 功能
 
 * 🌐 3D 地球（three.js）：日間 / 夜視 (NVG) / 熱像 (THERM) 三種顯示模式，晝夜交界線依「現在時間」計算
 * 🔍 **放大不再模糊（LOD）**：鏡頭拉近時，在內嵌的 4096 px 底圖上疊加 [NASA GIBS](https://earthdata.nasa.gov/gibs) WMTS 高解析圖磚（日間／熱像：`BlueMarble_ShadedRelief_Bathymetry`，夜間／夜視：`VIIRS_CityLights_2012`，z4–z7，最近約 490 m/px）；同時最多 18 塊、LRU 快取並釋放貼圖；renderer 使用 `devicePixelRatio`（上限 3，幀時間過長時自動降到 2／1.5）、各向異性過濾與 mipmap。圖磚來源已於頁尾與 `docs/DATA-SOURCES.md` 標示
-* ✈️ **台灣周邊真實航班**（[adsb.lol](https://adsb.lol)〔ODbL〕為主、[adsb.fi](https://adsb.fi) 備援、OpenSky 最後手段，由 Worker `/api/flights` 合併，範圍 21.5–26.5°N、119–123°E）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
+* ✈️ **東亞真實航班**（[adsb.lol](https://adsb.lol)〔ODbL〕為主、[adsb.fi](https://adsb.fi) 備援（僅台灣核心圓）、OpenSky 最後手段，由 Worker `/api/flights` 以 9 個 250 海浬圓合併，範圍 0–45°N、105–145°E，最多 800 架：疑似共機 > 台灣核心區 18–29°N、114–128°E > 其餘依高度）：顯示即時架數；Flight HUD 可 ‹ › 切換航班，顯示呼號、高度 (ft)、速度 (kt)、航向、升降率，並可「FOLLOW」跟隨；每 15 秒更新，兩次更新之間依航向與速度平滑推算
 * 🔺 **飛機與船隻圖示一眼分辨**：航空器為「機頭朝航向」的飛機剪影，船舶為「船艏朝航向」的船殼＋船艛剪影（依貨輪／油輪／客輪／漁船／其他上色）；皆為向量網格、以固定螢幕像素大小繪製（DPR 3 下依然銳利），近距離會隱藏靜止的小漁船以免蓋住島嶼；圖例同步更新
 * 🛰️ **真實衛星**（CelesTrak TLE + satellite.js SGP4）：顯示衛星總數、**台灣上空的衛星清單**、ISS 即時位置（可一鍵追蹤）
 * 🌏 **地震圖層 + QUAKES 面板（多來源即時合併）**：中央氣象署（含小規模有感地震，最權威）＋ USGS ＋ EMSC ＋ GFZ，Worker 每 2 分鐘抓取並依「時間 ±150 秒、位置 ±1.5°」去重，同一事件以氣象署為準，**每筆標示來源**（如 CWA·USGS·EMSC，並列各機構規模）；近 30 天 M3.0+、依規模大小的脈動圓環標記（24 小時內較亮較快），清單列出時間／規模／深度／地點／來源，點選會飛到震央。颱風與警特報同樣由氣象署公開資料取得
-* 🚢 **台灣周邊船舶 (AIS)**：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料來源為 aisstream.io 與交通部航港局（MPB）臺灣海域 AIS，由收集器低頻率取得並經自己的 Cloudflare Worker 以 MMSI 合併（API key 只存在 Worker secret）；CCG 標記為名稱／船型啟發式（排除漁船型別 30 的純 MMSI 前綴比對），沒有 key 或失敗時顯示 **DEMO DATA**
+* 🚢 **東亞船舶 (AIS)**（aisstream 範圍 0–45°N、105–145°E；交通部航港局 MPB 仍只有臺灣海域，無法擴大）：船形標記（依貨輪／油輪／客輪／漁船／其他／疑似海警上色，與白色飛機標記明顯不同）、「在畫面內 N 艘」計數、‹ › 切換或直接點選船隻、船名／MMSI／船型／航速 (kn)／航向／目的地、FOLLOW 跟隨；資料來源為 aisstream.io 與交通部航港局（MPB）臺灣海域 AIS，由收集器低頻率取得並經自己的 Cloudflare Worker 以 MMSI 合併（API key 只存在 Worker secret）；CCG 標記為名稱／船型啟發式（排除漁船型別 30 的純 MMSI 前綴比對），沒有 key 或失敗時顯示 **DEMO DATA**
 * 🛰️ **過境預測 (Passes)**：用瀏覽器定位（預設台北，也可手動輸入經緯度）預測未來 72 小時 ISS、天宮 (CSS) 與數顆亮星（HST、AJISAI、TERRA、AQUA、ENVISAT、ALOS）的過境：起／峰／止時間、最高仰角、起訖方位、是否「可能看得到」（衛星受日照且天色夠暗）；「LOOK HERE」羅盤會指出現在該看的方位與仰角，可選用手機羅盤；頁面開著時可在過境前 5 分鐘通知
 * 🕒 **資料新鮮度**：船舶（交通部航港局）、地震、PLA 面板顯示「資料更新於 N 分鐘前」；船位超過 10 分鐘（地震 10 分、PLA 抓取 60–90 分）轉為琥珀色。aisstream 補充來源另列一行（GitHub Actions 排程不穩，延遲屬正常，不影響主資料）。
 * 🎯 **辨識信心**：疑似海警／共軍艦／共機標示「**確認**（國防部／日本統合幕僚監部官方資料）／**高信心**（多項獨立訊號）／**推測**（僅單一規則：MMSI 413875、ICAO 0x7A1000–0x7A4FFF、政府船舶推論）」，並附圖例。
 * 🛡️ **PLA 分頁**：**國防部（MND）每日「中共解放軍臺海周邊海、空域動態」官方數字**（共機架次、進入西南／東部空域架次、共艦、**公務船**，附航跡示意圖連結與近 7 日長條圖；由放在台灣的 `pla-intel` Worker 抓取，Worker `/api/pla`）＋ **日本防衛省統合幕僚監部**發布的中國軍艦／軍機動向（級別、艦號→艦名、海峽與航向、機型；PDL 1.0，標示出典與「加工」）＋ 第三方 7 日趨勢 ＋ 海巡署新聞中提到「海警」的項目（Worker `/api/cga`，30 分鐘快取）。分頁明確標示：**國防部（MND）每日公布的架次／艦數才是權威數字**，地圖上的疑似標記只是少數有發送 ADS-B／AIS 的子集，不是計數
 * ⚠️ **疑似警示標籤（啟發式，非辨識）**：疑似海警船「⚠️ 疑似海警」、疑似解放軍海軍艦「⚠️ 疑似共軍」（名稱含 海軍／PLA NAVY／PLAN＋艦號，或 MMSI 412/413 且船型 35；漁船不會只靠 MMSI 被標記）、疑似共機「⚠️ 疑似共機」（adsb.lol/adsb.fi 軍用旗標＋中國 ICAO 位址區段／PLA 機型（含 TU16＝轟-6）或呼號；ICAO 位址落在 0x7A1000–0x7A4FFF 這段幾乎全是軍機的區段也會標；單靠一般中國位址不標記）。海警判斷增加：MMSI 413875xxx 區段、曾以海警船名出現過的 MMSI（KV 記憶）、船名內的艦號→所屬分局（如 14530→福建）；只有「船型 55」而無其他證據的船改標為較保守的「政府船舶」（例如 XIA MEN HAI YANG 01），不再稱海警。標籤永遠顯示並有脈動圈；多數共機／共艦不發 ADS-B／AIS，這些標記只是提示
-* 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊 M4.5+ 地震（多來源去重，同一地震只推一次）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關
+* 🔔 **Web Push 提醒（頁面關閉也會收到）**：台灣周邊（20–27.5°N、118–124.5°E）M4.5+ 地震，以及範圍內其他地區（日本、菲律賓等）**M6.5+** 強震（多來源去重，同一地震只推一次；日本 M4.5–6.4 不推播，避免洗版）、AIS 出現疑似中國海警船、ISS 過境前約 5 分鐘（依訂閱者位置）；每種提醒可分別開關
 * 🔎 搜尋：輸入呼號（如 `CAL`）、船名或 9 位 MMSI、衛星名稱（如 `STARLINK`、`ISS`）或座標（`25.03,121.56`）
 * 📍 快速定位：台北101、桃園機場、台灣上空
 * 📱 手機優先：375–430 px 直式不會橫向捲動、所有按鈕 ≥ 44 px、HUD 面板可收合（手機上一次只展開一個）、支援瀏海／Home 指示條 safe-area
@@ -117,7 +122,7 @@ python3 -m http.server 8000      # 或 npx serve .
 
 ### 設定
 
-編輯 `assets/config.js`（不需重新建置）：`openskyBase`、台灣範圍 `bbox`、`flightRefreshMs`、`satGroup`、`satRefreshMs`、`tleCacheMs`、`demoFallback`。
+編輯 `assets/config.js`（不需重新建置）：`openskyBase`、涵蓋範圍 `bbox`（預設 0–45°N、105–145°E）與台灣範圍 `twBox`、`flightRefreshMs`、`satGroup`、`satRefreshMs`、`tleCacheMs`、`demoFallback`。
 
 ## ⚠️ 關於 OpenSky 與 CORS（請務必閱讀）
 
@@ -190,6 +195,6 @@ MIT © 2026 messiah — 見 [LICENSE](LICENSE)。第三方資料與素材請遵�
 * **Run:** serve the folder with any static server (`python3 -m http.server`) and open `index.html`; no build or browser-side API key needed (the live feeds come from the deployed Worker, see `proxy/DEPLOY.md`). `node build.mjs` only if you edit `src/app.js`.
 * **Deploy:** push to GitHub, enable *Settings → Pages → main / root*. All paths are relative.
 * **Data caveats:** every feed has its own terms (adsb.fi and the CGA RSS are non-commercial; the MPB endpoint is undocumented; the PLA trend line is a third-party compilation; the PLA tab now shows the official Taiwan MND daily bulletin and Japan Joint Staff releases (PDL 1.0, attributed and marked as processed), scraped by a Taiwan-placed Worker, see `workers/pla-intel/`) — see `docs/DATA-SOURCES.md`. If a feed fails (CORS, 429, timeout) the UI falls back to another source or shows an amber **DEMO DATA** badge with generated placeholder data.
-* **Collector (GitHub Actions + placed Worker):** `.github/workflows/collector.yml` runs on a `*/5 * * * *` cron (plus manual `workflow_dispatch`) in two steps: (1) `POST` to the **`mpb-fetcher`** Worker (`workers/mpb-fetcher/`, `placement.region = "gcp:asia-east1"`) which fetches Taiwan MPB AIS (~7,000 ships), trims it and ingests it into the main Worker through a service binding — MPB only answers from Taiwan-routed networks, so GitHub runners and ordinary Workers time out, but a Worker placed near Taiwan works; (2) `scripts/collect-once.mjs` with `MPB=0` for one CWA fetch + ~60 s of aisstream, then a freshness check against `/api/ships` (`updated`) and `/api/quakes` (`time`). Repo secrets: `INGEST_TOKEN` / `CWA_API_KEY` / `AISSTREAM_API_KEY` / `WORKER_URL`. The run fails (red + e-mail) on a non-2xx / 0-ship answer from `mpb-fetcher`, `mpbAgeSec` > 300 s, CWA failure, non-2xx ingest or stale timestamps. GitHub cron is best-effort (delays of several minutes are normal). No always-on machine is needed any more; `scripts/ais-collector.mjs` remains only as a manual fallback.
+* **Collector (GitHub Actions + placed Worker):** `.github/workflows/collector.yml` runs on a `*/5 * * * *` cron (plus manual `workflow_dispatch`) in two steps: (1) `POST` to the **`mpb-fetcher`** Worker (`workers/mpb-fetcher/`, `placement.region = "gcp:asia-east1"`) which fetches Taiwan MPB AIS (~7,000 ships), trims it and ingests it into the main Worker through a service binding — MPB only answers from Taiwan-routed networks, so GitHub runners and ordinary Workers time out, but a Worker placed near Taiwan works; (2) `scripts/collect-once.mjs` with `MPB=0` for one CWA fetch + ~120 s of aisstream (box 0–45°N 105–145°E, ~110 distinct vessels per 60 s measured), then a freshness check against `/api/ships` (`updated`) and `/api/quakes` (`time`). Repo secrets: `INGEST_TOKEN` / `CWA_API_KEY` / `AISSTREAM_API_KEY` / `WORKER_URL`. The run fails (red + e-mail) on a non-2xx / 0-ship answer from `mpb-fetcher`, `mpbAgeSec` > 300 s, CWA failure, non-2xx ingest or stale timestamps. GitHub cron is best-effort (delays of several minutes are normal). No always-on machine is needed any more; `scripts/ais-collector.mjs` remains only as a manual fallback.
 * **Disclaimer:** the "spy dashboard" look is purely fictional styling. The original fake `TOP SECRET // NOFORN` banner was replaced with `OPEN DATA`. Data is public, best-effort and unverified — not for navigation or safety-critical use. Demo data is generated randomly.
 * **License:** MIT © 2026 messiah. Data sources: adsb.lol, adsb.fi, OpenSky Network, aisstream.io, Taiwan MPB, CWA, USGS, CGA, CelesTrak; textures: NASA Earth Observatory; zoom imagery: NASA GIBS (Blue Marble Shaded Relief + Bathymetry, VIIRS City Lights 2012).

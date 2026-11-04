@@ -19,8 +19,11 @@
     Float32BufferAttribute: xE, LineBasicMaterial: JK, Line: AZ, PointsMaterial: qK, Points: EZ,
     BackSide: UM, SRGB: IK, ACES: fG, Repeat: gG, Texture: $E,
   };
+  // NASA Blue Marble / Black Marble. Not inlined any more (that was 1.3 MB of base64 JS blocking first paint): a 1k WebP loads first (~70 KB), the full-size WebP
+  // (4096 / 2048 px, ~750 KB) is swapped in when the browser is idle; the JPEGs are the fallback. file:// still uses the base64 textures.js (WebGL refuses file:// images).
   var TEX = window.GODS_EYE_TEXTURES || {};
-  var DAY_TEX = TEX.day, NIGHT_TEX = TEX.night; // NASA Blue Marble / Black Marble (assets/textures/*.jpg), inlined by build.mjs
+  var TEX_LO = TEX.day ? { day: TEX.day, night: TEX.night } : { day: "assets/textures/earth-day-1k.webp", night: "assets/textures/earth-night-1k.webp" };
+  var TEX_HI = TEX.day ? null : [{ day: "assets/textures/earth-day.webp", night: "assets/textures/earth-night.webp" }, { day: "assets/textures/earth-day.jpg", night: "assets/textures/earth-night.jpg" }];
   var ICON = { Plane: SK, Satellite: PK, Plus: kK, Minus: TK, Search: uK, Radio: xK };
 
   var Data = window.GodsEyeData;
@@ -261,6 +264,7 @@
   function ago(ms) { if (!ms) return "--"; var s = Math.round((Date.now() - ms) / 1000); return s < 60 ? s + "s" : Math.round(s / 60) + "m"; }
 
   var PLACES = {
+    region: { lat: 22.5, lon: 125.0, narrow: 2.6, wide: 2.7, label: "東亞廣域" }, // 0–45°N, 105–145°E: South China Sea, Taiwan, W Pacific, Japan
     taiwan: { lat: 23.7, lon: 121.0, narrow: 3.0, wide: 2.1, label: "台灣上空" },
     t101: { lat: 25.0339, lon: 121.5645, narrow: 1.12, wide: 1.1, label: "台北101" },
     tpe: { lat: 25.0777, lon: 121.2328, narrow: 1.12, wide: 1.1, label: "桃園機場" },
@@ -276,6 +280,8 @@
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["🌏 範圍擴大到東亞　", "航班、船舶、地震的涵蓋範圍由台灣周邊擴大為 0–45°N、105–145°E：南到南海、東到西太平洋、北到日本。預設畫面改為「東亞廣域」，可用「台灣上空」回到台灣。船舶／航班在範圍外圍會自動精簡（台灣周邊優先）；航港局 MPB 與氣象署仍僅限台灣，推播也只針對台灣周邊（日本地震僅 M6.5 以上才通知）。（2026-11-04）"],
+    ["⚡ 開啟速度優化　", "文字與統計先顯示、地球儀稍後載入：大圖貼圖改為先載入 70 KB 小圖、閒置時再換高解析 WebP，衛星資料延後載入，首屏需下載的資料由約 1.2 MB 降到約 0.3 MB。（2026-11-04）"],
     ["📊 匿名訪客統計　", "新增 Cloudflare Web Analytics：僅統計匿名的頁面瀏覽與效能數據，不使用 Cookie、不追蹤個人或跨站行為，也不影響離線使用。（2026-11-03）"],
     ["🕒 資料新鮮度　", "船舶、地震、PLA 面板顯示「資料更新於 N 分鐘前」；船位超過 10 分鐘未更新會轉為琥珀色提醒。（2026-11-03）"],
     ["🎯 辨識信心標示　", "疑似海警／共軍／共機加上「確認／高信心／推測」：官方國防部與日本統合幕僚監部資料為確認；MMSI 413875、ICAO 0x7A1000–0x7A4FFF、政府船舶推論為推測。附圖例說明。"],
@@ -460,9 +466,9 @@
     var _pm = React.useState(""), pushMsg = _pm[0], setPushMsg = _pm[1];
     var _pb = React.useState(false), pushBusy = _pb[0], setPushBusy = _pb[1];
     var _q = React.useState(""), query = _q[0], setQuery = _q[1];
-    var _place = React.useState("taiwan"), place = _place[0], setPlace = _place[1];
+    var _place = React.useState("region"), place = _place[0], setPlace = _place[1];
     var _toast = React.useState(""), toast = _toast[0], setToast = _toast[1];
-    var _view = React.useState({ lat: 23.7, lon: 121, altKm: 0 }), view = _view[0], setView = _view[1];
+    var _view = React.useState({ lat: 22.5, lon: 125, altKm: 0 }), view = _view[0], setView = _view[1];
 
     var modeRef = React.useRef(mode); modeRef.current = mode;
     var selRef = React.useRef(selId); selRef.current = selId;
@@ -486,8 +492,13 @@
         pending = setTimeout(function () { pending = 0; setTick(function (t) { return t + 1; }); }, 250);
       });
       Data.start();
-      var iv = setInterval(function () { setTick(function (t) { return t + 1; }); }, 5000); // refresh "age" labels
-      return function () { unsub(); clearInterval(iv); clearTimeout(pending); };
+      function saveStats() { // last counts -> index.html's static first-paint skeleton shows them instantly on the next visit (until fresh data arrives)
+        var D = Data.state; if (D.flights.status === "loading" && D.ships.status === "loading") return;
+        try { localStorage.setItem("gods-eye:last", JSON.stringify({ sats: D.sats.total, f: D.flights.count, s: D.ships.count, over: D.sats.over.length, t: Date.now() })); } catch (e) { /* quota / private mode */ }
+      }
+      var iv = setInterval(function () { setTick(function (t) { return t + 1; }); saveStats(); }, 5000); // refresh "age" labels
+      window.addEventListener("pagehide", saveStats);
+      return function () { unsub(); clearInterval(iv); clearTimeout(pending); window.removeEventListener("pagehide", saveStats); };
     }, []);
 
     var flights = Data.state.flights, sats = Data.state.sats, ships = Data.state.ships, quakes = Data.state.quakes;
@@ -598,6 +609,7 @@
     }
 
     /* ---- pass predictions: recompute when the observer changes, then every 30 min ---- */
+    var passesFirstRef = React.useRef(true); // the first scan waits for load + idle; later ones (observer changed) run right away
     function recomputePasses() {
       setPasses(function (o) { return Object.assign({}, o, { status: "loading", error: "" }); });
       computePasses(observerRef.current).then(function (r) {
@@ -607,7 +619,7 @@
       });
     }
     React.useEffect(function () {
-      var t = setTimeout(recomputePasses, 400); // let the first paint happen before the (cheap) SGP4 scan
+      var t = setTimeout(function () { if (passesFirstRef.current) { passesFirstRef.current = false; Data.idle(recomputePasses, 1500); } else recomputePasses(); }, 400); // after first paint + load, in an idle period (it downloads two small TLE sets)
       var iv = setInterval(recomputePasses, 30 * 60 * 1000);
       return function () { clearTimeout(t); clearInterval(iv); };
     }, [observer.lat, observer.lon]);
@@ -734,9 +746,16 @@
     }, [ships.rev]);
 
     /* ---- three.js scene (created once) ---- */
+    // The globe is built AFTER the first paint (next frame + a task break), so the HTML text/stats are on screen before WebGL, the 128x128 sphere and the shaders
+    // are set up; textures stream in afterwards (low-res first, full-res when idle).
     React.useEffect(function () {
+      var cleanup = null, cancelled = false, t = 0, raf0 = 0;
+      raf0 = requestAnimationFrame(function () { t = setTimeout(function () { if (!cancelled) cleanup = initScene(); }, 0); });
+      return function () { cancelled = true; cancelAnimationFrame(raf0); clearTimeout(t); if (cleanup) cleanup(); };
+    }, []);
+    function initScene() {
       var canvas = canvasRef.current, root = rootRef.current;
-      if (!canvas) return;
+      if (!canvas) return null;
       var scene = new T.Scene();
       scene.background = new T.Color(0x02060a);
       var renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
@@ -759,7 +778,7 @@
       var sun = new T.DirectionalLight(0xffffff, 2.2); sun.position.set(5, 2, 3); scene.add(sun);
 
       var loader = new T.TextureLoader();
-      var dayMap = loader.load(DAY_TEX), nightMap = loader.load(NIGHT_TEX);
+      var dayMap = loader.load(TEX_LO.day), nightMap = loader.load(TEX_LO.night);
       var aniso = Math.min(16, (renderer.capabilities && renderer.capabilities.getMaxAnisotropy && renderer.capabilities.getMaxAnisotropy()) || 8);
       [dayMap, nightMap].forEach(function (t) { t.colorSpace = T.SRGB; t.anisotropy = aniso; t.generateMipmaps = true; t.wrapS = t.wrapT = T.Repeat; });
       var earthMat = new T.ShaderMaterial({
@@ -778,6 +797,30 @@
         ].join("\n"),
       });
       var earth = new T.Mesh(new T.SphereGeometry(1, 128, 128), earthMat); scene.add(earth);
+      // full-resolution textures: only after the page has loaded and the main thread is idle; skipped on Save-Data / 2G (the 1k map still works, GIBS tiles add detail when zoomed in)
+      var hiTimer = 0, hiDead = false;
+      function prep(t) { t.colorSpace = T.SRGB; t.anisotropy = aniso; t.generateMipmaps = true; t.wrapS = t.wrapT = T.Repeat; return t; }
+      function loadHi(k) {
+        if (hiDead || !TEX_HI || k >= TEX_HI.length) return;
+        var got = {}, failed = false;
+        function done(which, tex) {
+          if (hiDead) { tex.dispose(); return; }
+          got[which] = tex;
+          if (!got.day || !got.night) return;
+          var od = earthMat.uniforms.dayMap.value, on = earthMat.uniforms.nightMap.value;
+          earthMat.uniforms.dayMap.value = prep(got.day); earthMat.uniforms.nightMap.value = prep(got.night);
+          got.day.needsUpdate = got.night.needsUpdate = true; od.dispose(); on.dispose();
+        }
+        function bad() { if (!failed) { failed = true; loadHi(k + 1); } }
+        loader.load(TEX_HI[k].day, function (t) { done("day", t); }, undefined, bad);
+        loader.load(TEX_HI[k].night, function (t) { done("night", t); }, undefined, bad);
+      }
+      (function scheduleHi() {
+        var c = navigator.connection || {};
+        if (!TEX_HI || c.saveData || /(^|-)2g$/.test(c.effectiveType || "")) return;
+        function go() { hiTimer = setTimeout(function () { (window.requestIdleCallback || function (f) { f(); })(function () { loadHi(0); }, { timeout: 4000 }); }, 1500); }
+        if (document.readyState === "complete") go(); else window.addEventListener("load", go, { once: true });
+      })();
       var tileLayer = createTileLayer({ scene: scene, renderer: renderer, camera: camera, uniforms: earthMat.uniforms });
 
       var glowMat = new T.ShaderMaterial({
@@ -879,9 +922,9 @@
       var ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
       if (ro) ro.observe(root); else window.addEventListener("resize", resize);
 
-      // initial camera: look at Taiwan
+      // initial camera: the whole coverage area (0–45°N, 105–145°E)
       (function () {
-        var p = PLACES.taiwan, d = root.clientWidth < 700 ? p.narrow : p.wide;
+        var p = PLACES.region, d = root.clientWidth < 700 ? p.narrow : p.wide;
         camera.position.copy(latLonToVec(p.lat, p.lon, 1).normalize().multiplyScalar(d));
         controls.update();
       })();
@@ -1182,12 +1225,13 @@
 
       api.current = { camera: camera, controls: controls, renderer: renderer, tiles: tileLayer };
       return function () {
+        hiDead = true; clearTimeout(hiTimer);
         cancelAnimationFrame(raf); if (warnLayer.parentNode) warnLayer.parentNode.removeChild(warnLayer);
         canvas.removeEventListener("pointerdown", onDown); canvas.removeEventListener("pointerup", onUp);
         if (ro) ro.disconnect(); else window.removeEventListener("resize", resize);
         controls.dispose(); tileLayer.dispose(); renderer.dispose();
       };
-    }, []);
+    }
 
     /* ---- render ---- */
     function badge(label, feed) {
@@ -1437,8 +1481,8 @@
             h("b", null, q.place),
             h("small", null, new Date(q.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " · " + quakeAgo(q.t) + " · " + (q.depthKm != null ? Math.round(q.depthKm) + " km deep" : "depth --") + " · " + srcShort(q)))));
       })));
-      else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ earthquakes recorded around Taiwan in the last 30 days."));
-      bits.push(h("p", { key: "src", className: "ge-src" }, "來源 " + (quakes.source || "USGS") + "（合併去重，同一事件以 CWA 優先；每 2 分鐘更新 · live feed refreshes every 2 min）· 資料來源：交通部中央氣象署 CWA · USGS (public domain) · EMSC-CSEM (CC BY 4.0) · GFZ GEOFON (CC BY 4.0) · 20–27.5°N 118–124.5°E · updated " + ago(quakes.updated) + " ago" + (quakes.sources && quakes.sources.CWA && !quakes.sources.CWA.okAt ? " · ⚠ CWA 暫時無資料，目前僅顯示國際來源 (M4.5+)" : "") + " · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
+      else if (quakes.status === "live") bits.push(h("p", { key: "none", className: "ge-note" }, "No M3.0+ (Taiwan) / M4.5+ (0–45°N 105–145°E) earthquakes recorded in the last 30 days."));
+      bits.push(h("p", { key: "src", className: "ge-src" }, "來源 " + (quakes.source || "USGS") + "（合併去重，同一事件以 CWA 優先；每 2 分鐘更新 · live feed refreshes every 2 min）· 資料來源：交通部中央氣象署 CWA · USGS (public domain) · EMSC-CSEM (CC BY 4.0) · GFZ GEOFON (CC BY 4.0) · 台灣 20–27.5°N 118–124.5°E（M3.0+）、廣域 0–45°N 105–145°E（M4.5+，CWA 僅台灣）· updated " + ago(quakes.updated) + " ago" + (quakes.sources && quakes.sources.CWA && !quakes.sources.CWA.okAt ? " · ⚠ CWA 暫時無資料，目前僅顯示國際來源 (M4.5+)" : "") + " · rings sized by magnitude; brighter = last 24 h. Preliminary data, not an official warning (see Taiwan CWA)."));
       return bits;
     }
 
@@ -1542,7 +1586,7 @@
         ),
 
         h("nav", { className: "ge-chips", "aria-label": "Locations" },
-          ["t101", "tpe", "taiwan"].map(function (k) {
+          ["region", "taiwan", "t101", "tpe"].map(function (k) {
             return h("button", { key: k, type: "button", className: cx("ge-btn", "ge-chip", place === k && "is-on"), onClick: function () { goPlace(k); } }, PLACES[k].label);
           })),
         h("form", { className: "ge-search", onSubmit: runSearch, role: "search" },

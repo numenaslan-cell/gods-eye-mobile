@@ -1,5 +1,6 @@
 // Zero-dependency build: node build.mjs
-//  1. assets/textures.js  <- inlines assets/textures/*.jpg as data URIs (so it also works from file://)
+//  1. assets/textures.js  <- inlines assets/textures/*.jpg as data URIs. Only used when the page is opened from file:// (index.html loads it there); over http(s) the app
+//     loads assets/textures/earth-*-1k.webp first and the full-size earth-*.webp (jpg fallback) when idle, so this 1.3 MB file is never on the critical path.
 //  2. assets/app.bundle.js <- src/vendor.js (React + three.js bundle) + src/app.js
 import { readFileSync, writeFileSync } from "node:fs";
 const here = new URL(".", import.meta.url);

@@ -17,8 +17,10 @@ window.GODS_EYE_CONFIG = {
   proxyBase: "",
   shipRefreshMs: 30000,
 
-  // Bounding box around Taiwan (degrees).
-  bbox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 },
+  // Coverage area (degrees): South China Sea, Taiwan, western Pacific out to 145E and Japan up to 45N. The Worker serves flights / ships / quakes for this box.
+  bbox: { lamin: 0, lomin: 105, lamax: 45, lomax: 145 },
+  // Taiwan itself (the "OVER TW" satellite count, demo data and the Taiwan-only quake/CWA box).
+  twBox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 },
 
   // Flight refresh. Anonymous OpenSky gives only ~400 credits/day (1 credit per call
   // for this bbox), so the app backs off automatically on HTTP 429 / errors.

@@ -14,7 +14,8 @@
 
   var DEFAULTS = {
     openskyBase: "https://opensky-network.org/api",
-    bbox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 },
+    bbox: { lamin: 0, lomin: 105, lamax: 45, lomax: 145 },     // coverage area (the Worker serves exactly this box)
+    twBox: { lamin: 21.5, lomin: 119, lamax: 26.5, lomax: 123 }, // Taiwan: "OVER TW", demo data
     flightRefreshMs: 15000,
     proxyBase: "",            // Worker base ("https://<worker>.workers.dev/api"): AIS ships + push alerts. "" = derive from openskyBase
     shipRefreshMs: 30000,
@@ -86,7 +87,7 @@
   }
 
   function demoFlights() {
-    var now = Date.now(), b = cfg.bbox, list = [];
+    var now = Date.now(), b = cfg.twBox, list = [];
     list.push({ id: "demo-jal103", callsign: "JAL103", country: "Japan", lat: 25.08, lon: 121.23, altFt: 38400, speedKt: 492, vMs: 253, hdg: 272, vrFpm: 0, t: now });
     list.push({ id: "demo-pla1", callsign: "PLA1234", country: "China", lat: 24.9, lon: 120.1, altFt: 21000, speedKt: 410, vMs: 211, hdg: 95, vrFpm: 0, t: now, type: "H6", pla: true, plaWhy: ["mil", "cn-hex", "type"] }); // demo only: exercises the suspected-PLA UI
     var carriers = ["CAL", "EVA", "CPA", "JAL", "ANA", "CSN", "UAL", "SIA", "TTW", "MDA"];
@@ -118,8 +119,8 @@
 
   // Primary: the Worker's /flights (adsb.lol -> adsb.fi -> OpenSky, normalised server side, 10 s edge cache).
   function fetchFlightsProxy() {
-    var b = cfg.bbox, now = Date.now();
-    var url = cfg.proxyBase + "/flights?lamin=" + b.lamin + "&lomin=" + b.lomin + "&lamax=" + b.lamax + "&lomax=" + b.lomax;
+    var now = Date.now();
+    var url = cfg.proxyBase + "/flights"; // the Worker serves one fixed region (cfg.bbox), capped at ~800 aircraft
     return fetchTimeout(url, 14000, { cache: "no-store" }).then(function (res) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
@@ -272,7 +273,11 @@
 
   /* ---------------------------------------------------------------- earthquakes (CWA + USGS + EMSC + GFZ) */
   var quakeTimer = 0, quakeFailures = 0;
+  // Taiwan box: every M3.0+ for 30 days; wide region (SCS / W Pacific / Japan): only M4.5+ for 14 days (keeps the list, the map rings and the USGS payload small).
   var QK = { minLat: 20, maxLat: 27.5, minLon: 118, maxLon: 124.5, days: 30, minMag: 3 };
+  var QW = { minLat: 0, maxLat: 45, minLon: 105, maxLon: 145, days: 14, minMag: 4.5, limit: 250 };
+  function inBox(q, b) { return q.lat >= b.minLat && q.lat <= b.maxLat && q.lon >= b.minLon && q.lon <= b.maxLon; }
+  function keepQuake(q) { var age = Date.now() - q.t; return (inBox(q, QK) && q.mag >= QK.minMag && age < QK.days * 86400000) || (inBox(q, QW) && q.mag >= QW.minMag && age < QW.days * 86400000); }
   function mapQuake(f) {
     var p = f.properties || {}, c = (f.geometry && f.geometry.coordinates) || [];
     if (p.mag == null || c[0] == null || c[1] == null) return null;
@@ -327,9 +332,9 @@
   function sameQ(a, b) { return Math.abs(a.t - b.t) <= 180000 && Math.abs(a.lat - b.lat) <= 1.5 && Math.abs(a.lon - b.lon) <= 1.5; }
   // 30-day USGS M3+ history, with every event the live feed already knows replaced by the live (multi-source) record
   function buildQuakes() {
-    var live = qLive ? qLive.quakes.filter(function (q) { return q.lat >= QK.minLat && q.lat <= QK.maxLat && q.lon >= QK.minLon && q.lon <= QK.maxLon && q.mag >= QK.minMag && Date.now() - q.t < QK.days * 86400000; }) : [];
+    var live = qLive ? qLive.quakes.filter(keepQuake) : [];
     var hist = (qHist || []).filter(function (u) { return !live.some(function (q) { return sameQ(q, u); }); }).map(function (u) { u.src = "USGS"; u.srcs = ["USGS"]; u.others = []; return u; });
-    var out = hist.concat(live).sort(function (a, b) { return b.t - a.t; });
+    var out = hist.concat(live).sort(function (a, b) { return b.t - a.t; }).slice(0, 400); // one pulsing marker per quake: cap the scene
     var names = {}; out.forEach(function (q) { (q.srcs || []).forEach(function (n) { names[n] = 1; }); });
     state.quakes.source = ["CWA", "USGS", "EMSC", "GFZ"].filter(function (n) { return names[n]; }).join(" + ") || "USGS";
     state.quakes.sources = qLive ? qLive.sources : null; state.quakes.liveUpdated = qLive ? qLive.updated : 0;
@@ -338,14 +343,17 @@
   function pollQuakes() {
     if (document.hidden) { scheduleQuakes(60000); return; }
     var needHist = !qHist || Date.now() - qHistAt > 300000;
-    var start = new Date(Date.now() - QK.days * 86400000).toISOString().slice(0, 19);
-    var url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=200&minmagnitude=" + QK.minMag +
-      "&minlatitude=" + QK.minLat + "&maxlatitude=" + QK.maxLat + "&minlongitude=" + QK.minLon + "&maxlongitude=" + QK.maxLon + "&starttime=" + start;
+    function usgs(b, limit) {
+      return "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=" + limit + "&minmagnitude=" + b.minMag +
+        "&minlatitude=" + b.minLat + "&maxlatitude=" + b.maxLat + "&minlongitude=" + b.minLon + "&maxlongitude=" + b.maxLon + "&starttime=" + new Date(Date.now() - b.days * 86400000).toISOString().slice(0, 19);
+    }
+    function usgsFetch(b, limit) {
+      return fetchTimeout(usgs(b, limit), 15000, { cache: "no-store" }).then(function (res) { if (!res.ok) throw new Error("USGS HTTP " + res.status); return res.json(); }).then(function (j) { return (j.features || []).map(mapQuake).filter(Boolean); });
+    }
     var liveP = liveQuakes(), histErr = null;
-    var histP = !needHist ? Promise.resolve() : fetchTimeout(url, 15000, { cache: "no-store" }).then(function (res) {
-      if (!res.ok) throw new Error("USGS HTTP " + res.status);
-      return res.json();
-    }).then(function (j) { qHist = (j.features || []).map(mapQuake).filter(Boolean); qHistAt = Date.now(); }).catch(function (err) { histErr = err; });
+    var histP = !needHist ? Promise.resolve() : Promise.all([usgsFetch(QK, 200), usgsFetch(QW, QW.limit).catch(function () { return []; })]).then(function (r) { // the wide query is best effort
+      var seen = {}; qHist = r[0].concat(r[1]).filter(function (q) { if (seen[q.id]) return false; seen[q.id] = 1; return true; }); qHistAt = Date.now();
+    }).catch(function (err) { histErr = err; });
     Promise.all([liveP, histP]).then(function (r) {
       var live = r[0];
       if (live) qLive = live;
@@ -371,7 +379,7 @@
 
   /* --------------------------------------------------------------- satellites */
   var satrecs = [], satNames = [], satTimer = 0, demoOrbits = null;
-  var TW = cfg.bbox;
+  var TW = cfg.twBox;
 
   function tleUrl(group) { return "https://celestrak.org/NORAD/elements/gp.php?GROUP=" + encodeURIComponent(group) + "&FORMAT=tle"; }
 
@@ -589,12 +597,18 @@
 
   /* -------------------------------------------------------------------- start */
   var started = false;
+  // run fn after the window load event + `delay` ms, in an idle period (requestIdleCallback, 5 s timeout)
+  function idle(fn, delay) {
+    function go() { setTimeout(function () { (window.requestIdleCallback || function (f) { f(); })(fn, { timeout: 5000 }); }, delay || 0); }
+    if (document.readyState === "complete") go(); else window.addEventListener("load", go, { once: true });
+  }
   function start() {
     if (started) return; started = true;
     if (FORCE_DEMO) { setFlights("demo", demoFlights(), "demo mode (?demo=1)"); setShips("demo", demoShips(), "demo mode (?demo=1)"); setQuakes("demo", demoQuakes(), "demo mode (?demo=1)"); }
     else { pollFlights(); pollShips(); pollQuakes(); }
     pollPla(); pollCga(); pollIntel();
-    startSats();
+    // The 2.7 MB CelesTrak "active" TLE download + parsing 16k satellites is the heaviest data job: wait until the page has painted and loaded (and the CPU is idle).
+    idle(startSats, 3000);
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.flights.nextTry - 1000) pollFlights();
       if (!document.hidden && !FORCE_DEMO && Date.now() >= state.ships.nextTry - 1000) pollShips();
@@ -607,5 +621,5 @@
     return loadTle(group).then(function (r) { return { entries: parseTle(r.text), ageMin: r.ageMin, stale: !!r.stale }; });
   }
 
-  window.GodsEyeData = { _test: { parseCsv: parseCsv, plaStats: plaStats }, state: state, subscribe: subscribe, start: start, config: cfg, R_EARTH_KM: R_EARTH_KM, loadTleEntries: loadTleEntries, shipTypeLabel: shipTypeLabel };
+  window.GodsEyeData = { idle: idle, _test: { parseCsv: parseCsv, plaStats: plaStats }, state: state, subscribe: subscribe, start: start, config: cfg, R_EARTH_KM: R_EARTH_KM, loadTleEntries: loadTleEntries, shipTypeLabel: shipTypeLabel };
 })();
