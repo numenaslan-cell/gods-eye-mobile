@@ -280,6 +280,7 @@
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["◆ 全海域標示共軍艦機　", "共軍／海警／共機的疑似標示（MMSI 413875、PLAN／海警名稱與舷號、412/413＋35 類、ICAO 0x7A1000–0x7A4FFF、軍用旗標與呼號）現在套用到整個 0–45°N、105–145°E 的 AIS 與 ADS-B 資料，不只台灣周邊。另外新增「◆ 官方通報位置（概略）」：把日本統合幕僚監部公布的共軍艦艇／軍機目擊位置（例如「宮古島の南東約210km」、沖宮、大隅海峡）換算成地圖上的大約位置與不確定圈，標明日期、來源、信心「確認」。工具列的 ◆ 可開關。提醒：軍艦軍機多半關閉 AIS／ADS-B，地圖只顯示偵測到或官方通報的位置，沒標示不代表沒有；官方通報位置是當時的概略位置，不是即時位置。（2026-11-04）"],
     ["🌏 範圍擴大到東亞　", "航班、船舶、地震的涵蓋範圍由台灣周邊擴大為 0–45°N、105–145°E：南到南海、東到西太平洋、北到日本。預設畫面改為「東亞廣域」，可用「台灣上空」回到台灣。船舶／航班在範圍外圍會自動精簡（台灣周邊優先）；航港局 MPB 與氣象署仍僅限台灣，推播也只針對台灣周邊（日本地震僅 M6.5 以上才通知）。（2026-11-04）"],
     ["⚡ 開啟速度優化　", "文字與統計先顯示、地球儀稍後載入：大圖貼圖改為先載入 70 KB 小圖、閒置時再換高解析 WebP，衛星資料延後載入，首屏需下載的資料由約 1.2 MB 降到約 0.3 MB。（2026-11-04）"],
     ["📊 匿名訪客統計　", "新增 Cloudflare Web Analytics：僅統計匿名的頁面瀏覽與效能數據，不使用 Cookie、不追蹤個人或跨站行為，也不影響離線使用。（2026-11-03）"],
@@ -334,7 +335,29 @@
     return h("svg", { width: sz, height: sz, viewBox: "-0.62 -0.62 1.24 1.24", "aria-hidden": true, style: { flex: "none" } },
       pieces.map(function (pc, i) { return h("polygon", { key: i, points: pc.pts.map(function (q) { return q[0] + "," + (-q[1]); }).join(" "), fill: p.color, fillOpacity: pc.fill < 1 ? 0.45 : 1, stroke: "#02060a", strokeWidth: 0.07, strokeLinejoin: "round", paintOrder: "stroke" }); }));
   }
-  var WARN_TAGS = { ccg: "⚠️ 疑似海警", plan: "⚠️ 疑似共軍", air: "⚠️ 疑似共機" };
+  var WARN_TAGS = { ccg: "⚠️ 疑似海警", plan: "⚠️ 疑似共軍", air: "⚠️ 疑似共機", off: "◆ 官方通報位置（概略）" };
+  /* ---- officially reported positions (Japan Joint Staff releases, geocoded by the Worker: reference place + bearing + distance, or the named passage) ---- */
+  var OFF_MAX_AGE = 7 * 86400000;
+  function offTime(ev) { var t = Date.parse(ev.seen || ev.date || ""); return isFinite(t) ? t : 0; }
+  function officialMarks(intel, now) {
+    var out = [];
+    (intel.js || []).forEach(function (ev) {
+      var t = offTime(ev); if (!t || now - t > OFF_MAX_AGE || !ev.geo) return;
+      ev.geo.forEach(function (g, i) { out.push({ id: ev.id + ":" + i, ev: ev, g: g, t: t, lat: g.lat, lon: g.lon, rKm: g.rKm }); });
+    });
+    return out.sort(function (a, b) { return b.t - a.t; }).slice(0, 24);
+  }
+  function destLL(lat, lon, brgDeg, km) { // great-circle destination (deg)
+    var p1 = lat * DEG, l1 = lon * DEG, b = brgDeg * DEG, d = km / 6371;
+    var p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+    var l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+    return [p2 / DEG, ((l2 / DEG + 540) % 360) - 180];
+  }
+  function fmtSeen(ev) { // "2026-11-01T12:00:00+09:00" -> "2026-11-01 12:00 JST"
+    var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(ev.seen || ""); return m ? m[1] + " " + m[2] + " JST" : (ev.seen || ev.date || "") + " (時刻未公布)";
+  }
+  function fmtSeenShort(m) { var d = new Date(m.t + 9 * 3600000), s = d.toISOString(); return s.slice(5, 10).replace("-", "/") + (/T\d/.test(m.ev.seen || "") ? " " + s.slice(11, 16) + "JST" : ""); }
+  function offLabel(m) { return m.g.basis === "zone" ? "海域：" + m.g.label : "「" + m.g.label + "」"; }
   /* ---- identification confidence: 確認 (official MND / Japan Joint Staff data) · 高信心 (several independent signals agree) · 推測 (one rule only: MMSI 413875 block, ICAO 0x7A1000-0x7A4FFF block, gov't-vessel inference) ---- */
   var CONF = { sure: "確認", high: "高信心", guess: "推測" };
   function shipConf(sh) {
@@ -350,7 +373,8 @@
   function confNote(key) {
     return h("p", { key: key || "confleg", className: "ge-note ge-conflegend" },
       h("b", null, "信心標示　"), confBadge("sure", "a"), " 官方公布資料（國防部 MND／日本統合幕僚監部）· ", confBadge("high", "b"), " 多項獨立訊號相符（如名稱含 CCG／海警；軍籍旗標＋中國 ICAO 位址＋機型）· ", confBadge("guess", "c"),
-      " 僅憑單一規則（MMSI 413875 號段、ICAO 0x7A1000–0x7A4FFF 位址段、政府船舶／55 類推論）。除「確認」外皆為推測，非官方認定。");
+      " 僅憑單一規則（MMSI 413875 號段、ICAO 0x7A1000–0x7A4FFF 位址段、政府船舶／55 類推論）。除「確認」外皆為推測，非官方認定。",
+      h("br", null), h("b", null, "⚠ 並非全部　"), "地圖只顯示「偵測到」（AIS／ADS-B）或「官方通報」的位置；軍艦、軍機多半關閉 AIS／ADS-B，沒標示不代表沒有。◆ 官方通報位置（概略）是通報當時的大約位置（含不確定圈），不是即時位置。");
   }
   /* ---- data freshness: "資料更新於 N 分鐘前", amber past staleMin ---- */
   function freshText(ts) {
@@ -447,11 +471,12 @@
     var _tick = React.useState(0), setTick = _tick[1];
     var _sel = React.useState(null), selId = _sel[0], setSelId = _sel[1];
     var _follow = React.useState(false), follow = _follow[0], setFollow = _follow[1];
-    var _layers = React.useState({ sats: true, flights: true, ships: true, quakes: true }), layers = _layers[0], setLayers = _layers[1];
+    var _layers = React.useState({ sats: true, flights: true, ships: true, quakes: true, official: true }), layers = _layers[0], setLayers = _layers[1];
     var _tab = React.useState(function () { return window.innerHeight >= 760 ? "hud" : null; }) /* short screens start collapsed */, tab = _tab[0], setTab = _tab[1];
     var _ss = React.useState(null), selShipId = _ss[0], setSelShipId = _ss[1];
     var _sf = React.useState(false), sFollow = _sf[0], setSFollow = _sf[1];
     var _sq = React.useState(null), selQuakeId = _sq[0], setSelQuakeId = _sq[1];
+    var _so = React.useState(null), selOffId = _so[0], setSelOffId = _so[1];
     var _inv = React.useState(0), inView = _inv[0], setInView = _inv[1];
     var _obs = React.useState(loadObserver), observer = _obs[0], setObserver = _obs[1];
     var _ps = React.useState({ status: "loading", list: [], error: "", ageMin: null }), passes = _ps[0], setPasses = _ps[1];
@@ -514,6 +539,9 @@
     var selShip = selShipId ? sList.find(function (x) { return x.id === selShipId; }) || null : null;
     var ccgList = sList.filter(function (x) { return x.ccg; }), planList = sList.filter(function (x) { return x.plan; });
     var plaAir = list.filter(function (x) { return x.pla; });
+    var offMarks = officialMarks(Data.state.intel, Date.now()), offKey = offMarks.map(function (m) { return m.id; }).join("|");
+    var offRef = React.useRef(offMarks); if (offKey !== offRef.current.key) { offMarks.key = offKey; offRef.current = offMarks; }
+    var selOff = selOffId ? offMarks.find(function (m) { return m.id === selOffId; }) || null : null;
     var selPass = selPassKey ? passes.list.find(function (x) { return x.key === selPassKey; }) || null : null;
     var pushIssActive = !!(pushInfo && pushInfo.subscribed && pushInfo.prefs && pushInfo.prefs.iss);
 
@@ -552,7 +580,12 @@
       if (sFollow) { setSFollow(false); focusRef.current = null; }
       else { setSFollow(true); setFollow(false); focusRef.current = { kind: "ship", id: selShip.id }; }
     }
-    actionsRef.current = { selectFlight: selectFlight, selectShip: selectShip, selectQuake: selectQuake };
+    function selectOfficial(id, fly) {
+      setSelOffId(id); setTab("pla"); setFollow(false); setSFollow(false);
+      var m = offRef.current.find(function (x) { return x.id === id; });
+      if (m && fly) { setPlace(""); flyTo(m.lat, m.lon, isNarrow() ? 1.9 : 1.6, true); }
+    }
+    actionsRef.current = { selectFlight: selectFlight, selectShip: selectShip, selectQuake: selectQuake, selectOfficial: selectOfficial };
     function cyclePla() {
       if (!plaAir.length) return;
       var i = plaAir.findIndex(function (x) { return x.id === selId; });
@@ -975,6 +1008,26 @@
         });
       }
 
+      // officially reported positions (Japan Joint Staff): uncertainty circle on the globe + an amber HTML tag (see updateWarnTags)
+      var officialGroup = new T.Group(); scene.add(officialGroup);
+      var offGeo = [], lastOffKey = null, offMats = {};
+      function syncOfficial() {
+        var marks = offRef.current, key = marks.key || "";
+        if (key === lastOffKey) return; lastOffKey = key;
+        officialGroup.children.slice().forEach(function (o) { officialGroup.remove(o); if (o.geometry) o.geometry.dispose(); });
+        offGeo = [];
+        var nowT = Date.now();
+        marks.forEach(function (m) {
+          var pts = [], k;
+          for (k = 0; k <= 64; k++) { var q = destLL(m.lat, m.lon, k * 360 / 64, m.rKm), v = latLonToVec(q[0], q[1], 1.006); pts.push(v.x, v.y, v.z); }
+          var geo = new T.BufferGeometry(); geo.setAttribute("position", new T.Float32BufferAttribute(pts, 3));
+          var days = (nowT - m.t) / 86400000, op = days <= 2 ? 0.95 : days <= 4 ? 0.7 : 0.5, mk = Math.round(op * 100);
+          var mat = offMats[mk] || (offMats[mk] = new T.LineBasicMaterial({ color: 0xffd24a, transparent: true, opacity: op, depthWrite: false }));
+          officialGroup.add(new T.Line(geo, mat));
+          offGeo.push({ id: m.id, m: m, pos: latLonToVec(m.lat, m.lon, 1.006) });
+        });
+      }
+
       function syncSats() {
         var st = Data.state.sats, pos = st.pos, n = pos.length / 3;
         var all = new Float32Array(n * 3), tw = [], overSet = {};
@@ -1016,7 +1069,7 @@
       var warnLayer = document.createElement("div"); warnLayer.className = "ge-warnlayer"; warnLayer.setAttribute("aria-hidden", "true"); canvas.parentNode.insertBefore(warnLayer, canvas.nextSibling); // above the globe, below the HUD panels
       var warnEls = {}, tmpWv = new T.Vector3();
       function warnTag(key, kind, name, conf) {
-        var el = warnEls[key];
+        var el = warnEls[key]; if (el && kind === "off" && el.children[3].textContent !== name) el.children[3].textContent = name || "";
         if (!el) {
           el = warnEls[key] = document.createElement("div"); el.className = "ge-wtag ge-wtag-" + kind;
           el.innerHTML = '<i class="ge-wring"></i><i class="ge-wring ge-wring2"></i><span class="ge-wlab"></span><small class="ge-wname"></small>';
@@ -1026,22 +1079,23 @@
       }
       function updateWarnTags(lay, camLen) {
         var used = {}, W = root.clientWidth, H = root.clientHeight, camN2 = camera.position.clone().normalize(), cands = [];
-        function add(kind, id, mesh, name, conf) {
+        function add(kind, id, mesh, name, conf, xw) {
           tmpWv.copy(mesh.position); var up = tmpWv.clone().normalize();
           if (up.dot(camN2) <= 1 / camLen - 0.02) return;
           var pr = tmpWv.project(camera); if (pr.z >= 1 || Math.abs(pr.x) > 1.08 || Math.abs(pr.y) > 1.08) return;
-          cands.push({ key: kind + ":" + id, kind: kind, name: name, conf: conf, x: (pr.x * 0.5 + 0.5) * W, y: (-pr.y * 0.5 + 0.5) * H, d: pr.x * pr.x + pr.y * pr.y });
+          cands.push({ key: kind + ":" + id, kind: kind, name: name, conf: conf, xw: xw, x: (pr.x * 0.5 + 0.5) * W, y: (-pr.y * 0.5 + 0.5) * H, d: pr.x * pr.x + pr.y * pr.y });
         }
         if (lay.ships) warnShipIds.forEach(function (id) { var e = shipMeshes[id]; if (e) add(e.sh.plan ? "plan" : "ccg", id, e.mesh, e.sh.name, shipConf(e.sh)); });
         if (lay.flights) warnFlightIds.forEach(function (id) { var e = meshes[id]; if (e) add("air", id, e.mesh, e.fl.callsign, airConf(e.fl)); });
-        var PRI = { plan: 0, ccg: 1, air: 2 };
-        cands.sort(function (a, b) { return PRI[a.kind] - PRI[b.kind] || a.d - b.d; });
+        if (lay.official) offGeo.forEach(function (o) { var d0 = (Date.now() - o.m.t) / 86400000; add("off", o.id, { position: o.pos }, fmtSeenShort(o.m) + " · " + o.m.g.label, "sure", d0); });
+        var PRI = { plan: 0, off: 1, ccg: 2, air: 3 };
+        cands.sort(function (a, b) { return PRI[a.kind] - PRI[b.kind] || (a.kind === "off" ? a.xw - b.xw : a.d - b.d); });
         var placed = [], showName = camLen < 1.8;
         cands.slice(0, 16).forEach(function (c, i) {
           var el = warnTag(c.key, c.kind, c.name, c.conf); used[c.key] = 1;
           // stack overlapping labels upwards (each label ≈ 100 x 20 px, drawn 24 px above its ring); hide the label (keep the ring) if no free slot
-          var lift = -1, w = 132, hgt = 29;
-          for (var k2 = 0; k2 < 6 && lift < 0; k2++) {
+          var lift = -1, w = c.kind === "off" ? 190 : 132, hgt = 29;
+          for (var k2 = 0; k2 < (c.kind === "off" ? 2 : 6) && lift < 0; k2++) {
             var bx0 = c.x - w / 2, by0 = c.y - 24 - hgt - k2 * (hgt + 2), ok = true;
             for (var q = 0; q < placed.length; q++) { var pb = placed[q]; if (bx0 < pb[2] && bx0 + w > pb[0] && by0 < pb[3] && by0 + hgt > pb[1]) { ok = false; break; } }
             if (ok) { lift = k2; placed.push([bx0, by0, bx0 + w, by0 + hgt]); }
@@ -1050,7 +1104,7 @@
           el.style.zIndex = 100 - i; if (el.style.display === "none") el.style.display = "";
           var lab = el.children[2], nm = el.children[3];
           lab.style.display = lift < 0 ? "none" : ""; lab.style.marginBottom = lift > 0 ? (lift * (hgt + 2)) + "px" : "0";
-          nm.style.display = showName && lift === 0 ? "" : "none";
+          nm.style.display = (c.kind === "off" ? camLen < 2.0 : showName) && lift === 0 ? "" : "none"; if (c.kind === "off") el.style.opacity = c.xw <= 2 ? 1 : c.xw <= 4 ? 0.8 : 0.6;
         });
         Object.keys(warnEls).forEach(function (k) { if (!used[k]) { warnEls[k].style.display = "none"; if (!warnEls[k].__t) warnEls[k].__t = Date.now(); else if (Date.now() - warnEls[k].__t > 30000) { warnLayer.removeChild(warnEls[k]); delete warnEls[k]; } } else warnEls[k].__t = 0; });
       }
@@ -1063,6 +1117,7 @@
         if (sst.rev !== lastSatRev) { lastSatRev = sst.rev; syncSats(); }
         if (Data.state.ships.rev !== lastShipRev) { lastShipRev = Data.state.ships.rev; syncShips(); }
         if (Data.state.quakes.rev !== lastQuakeRev) { lastQuakeRev = Data.state.quakes.rev; syncQuakes(); }
+        syncOfficial();
         var oo = observerRef.current, oKey = oo.lat + "," + oo.lon;
         if (oKey !== lastObsKey) { lastObsKey = oKey; var ov = latLonToVec(oo.lat, oo.lon, 1.004); obsPts.geometry.dispose(); obsPts.geometry = new T.BufferGeometry(); obsPts.geometry.setAttribute("position", new T.Float32BufferAttribute([ov.x, ov.y, ov.z], 3)); }
         var pm = passMarkRef.current;
@@ -1081,7 +1136,7 @@
         var tint = m === "NVG" ? 0x4dff6a : m === "THERM" ? 0xffa040 : 0x9fe8ff;
         satMat.color.setHex(tint);
 
-        satGroup.visible = lay.sats; flightGroup.visible = lay.flights; trailLine.visible = lay.flights; shipGroup.visible = lay.ships; quakeGroup.visible = lay.quakes;
+        satGroup.visible = lay.sats; flightGroup.visible = lay.flights; trailLine.visible = lay.flights; shipGroup.visible = lay.ships; quakeGroup.visible = lay.quakes; officialGroup.visible = lay.official;
 
         // flights: dead-reckon, orient, scale
         var camLen = camera.position.length();
@@ -1219,7 +1274,8 @@
         if (lay2.flights) for (var fid in meshes) { var pf = deadReckon(meshes[fid].fl, nowMs2); consider("flight", fid, pf.lat, pf.lon, 1.012); }
         if (lay2.ships) for (var sid2 in shipMeshes) { var ps = deadReckon(shipMeshes[sid2].sh, nowMs2); consider("ship", sid2, ps.lat, ps.lon, 1.008); }
         if (lay2.quakes) for (var qid2 in quakeMeshes) { var qm = quakeMeshes[qid2].q; consider("quake", qid2, qm.lat, qm.lon, 1.004); }
-        if (best) { if (best.kind === "quake") actionsRef.current.selectQuake(best.id, false); else if (best.kind === "ship") actionsRef.current.selectShip(best.id, false); else actionsRef.current.selectFlight(best.id, false); }
+        if (lay2.official) offGeo.forEach(function (o) { consider("official", o.id, o.m.lat, o.m.lon, 1.006); });
+        if (best) { if (best.kind === "official") actionsRef.current.selectOfficial(best.id, false); else if (best.kind === "quake") actionsRef.current.selectQuake(best.id, false); else if (best.kind === "ship") actionsRef.current.selectShip(best.id, false); else actionsRef.current.selectFlight(best.id, false); }
       }
       canvas.addEventListener("pointerdown", onDown); canvas.addEventListener("pointerup", onUp);
 
@@ -1329,6 +1385,26 @@
       var offDays = (intel.mnd || []).slice(0, 7).reverse(), O = intel.mnd && intel.mnd[0];
       if (intel.status === "loading" && !O) bits.push(h("p", { key: "il", className: "ge-note" }, "Loading MND / Joint Staff reports…"));
       if (intel.status === "error") bits.push(h("p", { key: "ie", className: "ge-note ge-warn" }, "MND / Joint Staff feed unavailable (" + (intel.error || "?") + "). Retrying…"));
+      if (offMarks.length || selOff) {
+        bits.push(h("div", { key: "ofd", className: "ge-pla-date" }, h("b", null, "◆ 官方通報位置（概略） ", confBadge("sure", "cf")), h("small", null, offMarks.length + " 筆 · 近 7 日 · 日本統合幕僚監部")));
+        if (selOff) {
+          var ev = selOff.ev, g = selOff.g, shipsTxt = (ev.ships || []).map(function (x) { return (x.clsEn || x.cls || "") + (x.hull ? " 艦番号 " + x.hull : "") + (x.ship ? " " + x.ship : ""); });
+          bits.push(h("div", { key: "ofc", className: "ge-offcard" },
+            h("b", null, "◆ 官方通報位置（概略） · " + (ev.kind === "air" ? "✈ 共軍機" : "⚓ 共軍艦艇")),
+            h("p", { className: "ge-note" }, confBadge("sure", "co"), " " + fmtSeen(ev) + " · 來源：防衛省・統合幕僚監部 " + ev.id),
+            h("p", { className: "ge-note" }, "約 " + fmtLL(selOff.lat, selOff.lon) + "　± " + selOff.rKm + " km（不確定圈）"),
+            h("p", { className: "ge-note" }, g.basis === "bearing" ? "公布位置：「" + (ev.place || g.label) + "」→ 以參考地點＋方位（僅 8 向）＋距離換算，故有不確定圈。" : g.basis === "between" ? "公布位置：「" + (ev.place || g.label) + "」→ 取兩地中點。" : "只公布通過的海域（" + g.label + "），圓心取海域中央，實際位置不明。"),
+            shipsTxt.length ? h("p", { className: "ge-note" }, "艦艇：" + shipsTxt.join("；")) : null,
+            ev.aircraftDetail && ev.aircraftDetail.length ? h("p", { className: "ge-note" }, "機種：" + ev.aircraftDetail.join("、") + (ev.scramble ? " · 緊急発進" : "")) : (ev.types && ev.types.length ? h("p", { className: "ge-note" }, "機種：" + ev.types.join("、")) : null),
+            h("p", { className: "ge-note ge-warn" }, "這是通報時刻的大約位置，之後已經移動，不是即時位置。"),
+            h("p", { className: "ge-note" }, h("a", { className: "ge-link", href: ev.pdf, target: "_blank", rel: "noopener noreferrer" }, "統合幕僚監部原文 ↗"), " · ", h("button", { type: "button", className: "ge-btn ge-small", onClick: function () { setSelOffId(null); } }, "關閉"))));
+        }
+        bits.push(h("ul", { key: "ofl", className: "ge-list ge-passes ge-cga" }, offMarks.slice(0, 8).map(function (m) {
+          return h("li", { key: m.id }, h("button", { type: "button", className: cx("ge-li", "ge-pass", m.id === selOffId && "is-on"), onClick: function () { selectOfficial(m.id, true); } },
+            h("span", { className: "ge-pass-main" }, h("b", null, (m.ev.kind === "air" ? "✈ " : "⚓ ") + fmtSeenShort(m) + " · " + m.g.label), h("small", null, (m.ev.kind === "air" ? (m.ev.types || []).join(" + ") : (m.ev.classEn || []).join(" + ").replace(/ \((Type \w+)\)/g, "")) + " · ±" + m.rKm + " km")), h("span", { "aria-hidden": true }, "◎")));
+        })));
+        bits.push(h("p", { key: "ofn", className: "ge-src" }, "地圖上的 ◆ 為官方通報的概略位置（日期＝目擊日，圓圈＝不確定範圍），確認＝資料出自官方公告，不代表位置精確。軍艦、軍機多半關閉 AIS／ADS-B，地圖只顯示偵測到或官方通報的位置，並非全部。國防部每日圖僅有示意圖（圖片），不含可轉換的座標，未納入。出典：防衛省・統合幕僚監部（PDL 1.0，經本站加工換算）。"));
+      }
       if (O) {
         var omax = Math.max.apply(null, offDays.map(function (d) { return d.aircraft || 0; }).concat([1]));
         bits.push(h("div", { key: "od", className: "ge-pla-date" }, h("b", null, "國防部 MND DAILY · OFFICIAL ", confBadge("sure", "cs")), h("small", null, O.date + " · 06:00→06:00 (UTC+8)")));
@@ -1526,7 +1602,7 @@
       { id: "pla", label: "PLA", sum: Data.state.intel.mnd.length ? String(Data.state.intel.mnd[0].aircraft == null ? "—" : Data.state.intel.mnd[0].aircraft) : Data.state.pla.latest ? String(Data.state.pla.latest.aircraft) : "—", body: plaBody },
       { id: "sats", label: "SATS", sum: String(over.length), body: satsBody },
       { id: "passes", label: "PASSES", sum: (function () { var n = passes.list.find(function (p) { return p.end > Date.now(); }); return n ? hm(n.start) : "—"; })(), body: passesBody },
-      { id: "news", label: "NEW", sum: "11/3", body: newsBody },
+      { id: "news", label: "NEW", sum: "11/4", body: newsBody },
       { id: "alerts", label: "ALERTS", sum: pushInfo && pushInfo.subscribed ? "ON" : "OFF", body: alertsBody },
     ];
     var curTab = TABS.find(function (t) { return t.id === tab; });
@@ -1570,6 +1646,7 @@
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.sats && "is-on"), "aria-pressed": layers.sats, "aria-label": "Toggle satellites", title: "Satellites", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { sats: !l.sats }); }); } }, h(ICON.Satellite, { size: 18 })),
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.ships && "is-on"), "aria-pressed": layers.ships, "aria-label": "Toggle ships", title: "Ships", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { ships: !l.ships }); }); } }, h(ShipIcon, { size: 18 })),
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.quakes && "is-on"), "aria-pressed": layers.quakes, "aria-label": "Toggle earthquakes", title: "Earthquakes", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { quakes: !l.quakes }); }); } }, h(QuakeIcon, { size: 18 })),
+            h("button", { type: "button", className: cx("ge-btn", "ge-tool", "ge-tool-off", layers.official && "is-on"), "aria-pressed": layers.official, "aria-label": "Toggle officially reported PLA positions", title: "官方通報位置（概略）", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { official: !l.official }); }); } }, "◆"),
             h("button", { type: "button", className: cx("ge-btn", "ge-tool", layers.flights && "is-on"), "aria-pressed": layers.flights, "aria-label": "Toggle flights", title: "Flights", onClick: function () { setLayers(function (l) { return Object.assign({}, l, { flights: !l.flights }); }); } }, h(ICON.Plane, { size: 18 })),
             h("button", { type: "button", className: "ge-btn ge-tool", "aria-label": "Zoom in", onClick: function () { zoom(1); } }, h(ICON.Plus, { size: 18 })),
             h("button", { type: "button", className: "ge-btn ge-tool", "aria-label": "Zoom out", onClick: function () { zoom(-1); } }, h(ICON.Minus, { size: 18 }))),

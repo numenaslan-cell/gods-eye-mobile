@@ -6,7 +6,7 @@ import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
 import { parseCgaRss } from "../src/cga.mjs";
-import { parseMndList, parseMndDetail, parseJsIndex, parseJsTitle, parseJsPdfText, ccgHull, decodeCcgHull, sanitizeJsDetail, sanitizeMndDay, pruneJsEvents, needPdf, plaPublic } from "../src/intel.mjs";
+import { parseMndList, parseMndDetail, parseJsIndex, parseJsTitle, parseJsPdfText, ccgHull, decodeCcgHull, sanitizeJsDetail, sanitizeMndDay, pruneJsEvents, needPdf, plaPublic, geocodeJsPlace, jsGeo, destPoint } from "../src/intel.mjs";
 import { parseQuakeZip, parseQuakeXml, zipEntries, entryTime, s3Warnings, s3Typhoons } from "../src/cwas3.mjs";
 import { parseUsgs, parseEmsc, parseGfz, mergeQuakeSources, pickAlertQuakes, fingerprint, sameEvent, quakeUrls, quakeUrlSets, mergeById, isFarQuake } from "../src/quakes.mjs";
 import { PLAN_HULLS } from "../src/plahulls.mjs";
@@ -407,4 +407,17 @@ await ok("collector watchdog: stale collector + token -> one workflow_dispatch p
   h.ghd = { at: now - 5 * 60000, ok: true }; assert.equal(h.collectorCheck(now).needDispatch, false, "throttled: dispatched 5 min ago");
   h.ghd = { at: now - 16 * 60000, ok: true }; assert.equal(h.collectorCheck(now).needDispatch, true);
   h.collectorAt = now - 120000; assert.equal(h.collectorCheck(now).needDispatch, false, "collector fresh (2 min)"); assert.equal(h.collectorCheck(now).ageSec, 120);
+});
+
+await ok("Joint Staff place -> approximate position: reference + 8-point bearing + km, uncertainty grows with distance; passages give zones; vague 東シナ alone is not placed", () => {
+  const g = geocodeJsPlace("宮古島(沖縄県)の南東約210kmの海域");
+  assert.equal(g.basis, "bearing"); assert.ok(Math.abs(g.lat - 23.44) < 0.05 && Math.abs(g.lon - 126.79) < 0.05, JSON.stringify(g)); assert.equal(g.rKm, 94);
+  const [la, lo] = destPoint(24.78, 125.33, 90, 100); assert.ok(Math.abs(la - 24.76) < 0.05 && Math.abs(lo - 126.28) < 0.05, la + "," + lo);
+  assert.equal(geocodeJsPlace("未知の島の北約10kmの海域"), null); assert.equal(geocodeJsPlace(null), null);
+  assert.equal(geocodeJsPlace("都井岬(宮崎県)の南東約60kmの海域").rKm, 34, "min 30 km floor + 0.4 d");
+  const z = jsGeo({ title: "中国軍機の動向について（Y-9 沖宮 東シナ）", groups: [{ where: ["沖宮", "東シナ"] }] }); assert.equal(z.length, 1); assert.equal(z[0].basis, "zone");
+  assert.deepEqual(jsGeo({ title: "x", groups: [{ where: ["東シナ"] }] }), []);
+  assert.equal(jsGeo({ place: "口永良部島(鹿児島県)の西約200kmの海域", groups: [] })[0].basis, "bearing");
+  const pub = plaPublic({ mnd: { list: [], days: {} }, js: { events: [{ id: "p20261102_04", date: "2026-11-02", title: "t", kind: "ship", groups: [], place: "宮古島(沖縄県)の南東約210kmの海域" }], details: {} } }, Date.now());
+  assert.ok(pub.js.events[0].geo && pub.js.events[0].geo[0].lat < 24);
 });

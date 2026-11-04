@@ -1,5 +1,5 @@
 /* Service worker (v14: full-size textures and the file://-only textures.js are NOT precached — they are cached on first use): cache the static app shell only (API calls always go to the network) + Web Push alerts. */
-const CACHE = "gods-eye-v14";
+const CACHE = "gods-eye-v15";
 const SHELL = ["./", "index.html", "manifest.json", "assets/styles.css", "assets/config.js", "assets/live-data.js", "assets/passes.js", "assets/push.js",
   "assets/app.bundle.js", "assets/textures/earth-day-1k.webp", "assets/textures/earth-night-1k.webp", "assets/vendor/satellite.min.js", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });

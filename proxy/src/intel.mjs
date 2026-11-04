@@ -145,6 +145,53 @@ export function mergeJs(events, details) {
   return events.map((e) => { const d = details && details[e.id]; return d ? { ...e, ships: d.ships || [], aircraftDetail: d.aircraft || [], uav: d.uav || false, scramble: d.scramble || false, seen: d.seen || null, place: d.place || null } : e; });
 }
 
+/* ------------------------------------------------------------------ Japan Joint Staff -> approximate map position
+ * The releases give the first sighting as "<reference place>(<prefecture>)の<8-point direction>約<N>kmの海域" (ships) and, for aircraft, only a passage name (沖宮 = Okinawa–Miyako gap …).
+ * We turn that into an APPROXIMATE position (reference point + bearing + distance) with an uncertainty radius: the direction has 8 points (±22.5° => lateral error up to ~0.4·d) and the
+ * distance is rounded, so r = max(30 km, 0.4·d + 10 km). Aircraft / ships without a distance get the centre of the named passage and the passage's radius. Never a track, never a fix. */
+const GAZ = { // reference places in Japanese releases -> [lat, lon]
+  "宮古島": [24.78, 125.33], "沖縄本島": [26.5, 127.95], "久米島": [26.35, 126.8], "与那国島": [24.47, 123.0], "西表島": [24.33, 123.8], "石垣島": [24.45, 124.2], "尖閣諸島": [25.75, 123.5], "魚釣島": [25.75, 123.47],
+  "奄美大島": [28.3, 129.4], "横当島": [27.24, 128.99], "徳之島": [27.8, 128.95], "与論島": [27.04, 128.4], "沖永良部島": [27.37, 128.57], "口永良部島": [30.46, 130.2], "種子島": [30.6, 131.0], "屋久島": [30.35, 130.5], "トカラ列島": [29.5, 129.7],
+  "都井岬": [31.37, 131.34], "佐多岬": [31.0, 130.66], "室戸岬": [33.25, 134.18], "足摺岬": [32.72, 133.02], "潮岬": [33.43, 135.76], "男女群島": [32.0, 128.4], "五島列島": [32.7, 128.8], "対馬": [34.4, 129.3], "壱岐": [33.78, 129.7], "隠岐": [36.2, 133.3], "隠岐諸島": [36.2, 133.3],
+  "南大東島": [25.85, 131.23], "北大東島": [25.95, 131.3], "沖大東島": [24.47, 131.23], "沖ノ鳥島": [20.42, 136.08], "硫黄島": [24.78, 141.32], "父島": [27.1, 142.2], "八丈島": [33.1, 139.8], "伊豆大島": [34.75, 139.4],
+  "佐渡島": [38.0, 138.4], "能登半島": [37.5, 137.3], "竜飛岬": [41.25, 140.35], "宗谷岬": [45.52, 141.94], "礼文島": [45.4, 141.04], "利尻島": [45.18, 141.24], "襟裳岬": [41.93, 143.25], "金華山": [38.28, 141.58], "犬吠埼": [35.71, 140.87], "御前崎": [34.6, 138.23], "潮岬沖": [33.43, 135.76],
+  "鹿児島": [31.6, 130.55], "長崎": [32.75, 129.87], "福江島": [32.68, 128.84], "甑島": [31.75, 129.85], "馬毛島": [30.74, 130.99], "奄美": [28.3, 129.4], "沖縄": [26.5, 127.95],
+};
+const DIR_DEG = { "北東": 45, "北西": 315, "南東": 135, "南西": 225, "北": 0, "南": 180, "東": 90, "西": 270 };
+// passages named in the titles -> [centre lat, lon, radius km, English label]; used when there is no "N km from X" sentence (all aircraft releases)
+export const JS_ZONES = [
+  [/沖縄本島-宮古島間|沖宮/, [25.6, 126.3, 110, "Miyako Strait (Okinawa–Miyako gap)"]], [/大隅海峡/, [30.9, 131.0, 70, "Osumi Strait"]], [/奄美大島-横当島間/, [28.0, 129.2, 70, "Amami–Yokoate gap"]],
+  [/与那国島-西表島間/, [24.4, 123.4, 55, "Yonaguni–Iriomote gap"]], [/与那台/, [24.3, 122.6, 80, "Yonaguni–Taiwan gap"]], [/対馬海峡/, [34.0, 129.5, 110, "Tsushima Strait"]],
+  [/宗谷海峡/, [45.75, 142.0, 60, "Soya Strait"]], [/津軽海峡/, [41.5, 140.6, 50, "Tsugaru Strait"]], [/男女群島/, [32.0, 128.4, 60, "Danjo Islands"]],
+];
+const R_KM = 6371;
+export function destPoint(lat, lon, bearingDeg, km) {
+  const φ1 = lat * Math.PI / 180, λ1 = lon * Math.PI / 180, θ = bearingDeg * Math.PI / 180, δ = km / R_KM;
+  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
+  const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
+  return [Math.round(φ2 * 180 / Math.PI * 100) / 100, Math.round(((λ2 * 180 / Math.PI + 540) % 360 - 180) * 100) / 100];
+}
+/** "宮古島(沖縄県)の南東約210kmの海域" -> { lat, lon, rKm, basis:"bearing", ref, dir, km } | null. Also handles "AとBの間" (midpoint). */
+export function geocodeJsPlace(place) {
+  const t = nfkc(place || "").replace(/\s+/g, "").replace(/\([^)]*\)/g, "");
+  const m = /^(.{2,10}?)の(北東|北西|南東|南西|北|南|東|西)約?(\d{1,4})km/.exec(t);
+  if (m && GAZ[m[1]]) {
+    const km = +m[3], [la, lo] = GAZ[m[1]], [lat, lon] = destPoint(la, lo, DIR_DEG[m[2]], km);
+    return { lat, lon, rKm: Math.round(Math.max(30, 0.4 * km + 10)), basis: "bearing", ref: m[1], dir: m[2], km };
+  }
+  const b = /^(.{2,8}?)と(.{2,8}?)の間/.exec(t);
+  if (b && GAZ[b[1]] && GAZ[b[2]]) { const [a1, o1] = GAZ[b[1]], [a2, o2] = GAZ[b[2]]; return { lat: Math.round((a1 + a2) / 2 * 100) / 100, lon: Math.round((o1 + o2) / 2 * 100) / 100, rKm: 80, basis: "between", ref: b[1] + "–" + b[2] }; }
+  return null;
+}
+/** One (index-level or PDF-merged) Joint Staff event -> approximate markers [{ lat, lon, rKm, basis, label }] (empty when nothing can be placed; the vague 東シナ海 alone is not placed). */
+export function jsGeo(ev) {
+  if (!ev) return [];
+  if (ev.place) { const g = geocodeJsPlace(ev.place); if (g) return [{ lat: g.lat, lon: g.lon, rKm: g.rKm, basis: g.basis, label: g.basis === "bearing" ? g.ref + "の" + g.dir + "約" + g.km + "km" : g.ref }]; }
+  const names = [...new Set(((ev.groups || []).flatMap((g) => g.where || [])).concat(nfkc(ev.title || "").match(/沖宮|与那台|東シナ/g) || []))], out = [];
+  for (const w of names) for (const [re, z] of JS_ZONES) if (re.test(w)) { if (!out.some((o) => o.lat === z[0] && o.lon === z[1])) out.push({ lat: z[0], lon: z[1], rKm: z[2], basis: "zone", label: z[3] }); break; }
+  return out.slice(0, 2);
+}
+
 /* ------------------------------------------------------------------ China Coast Guard hull numbers */
 const CCG_LOCAL = { 11: ["江蘇", "Jiangsu"], 12: ["上海", "Shanghai"], 13: ["浙江", "Zhejiang"], 14: ["福建", "Fujian"], 21: ["廣東", "Guangdong"], 22: ["廣西", "Guangxi"], 23: ["海南", "Hainan"], 31: ["遼寧", "Liaoning"], 32: ["河北", "Hebei"], 33: ["天津", "Tianjin"], 34: ["山東", "Shandong"] };
 const CCG_DIRECT = { 1: ["上海", "Shanghai (Bureau 1)"], 2: ["寧波", "Ningbo, Zhejiang (Bureau 2)"], 3: ["廣州", "Guangzhou (Bureau 3)"], 4: ["文昌", "Wenchang, Hainan (Bureau 4)"], 5: ["三亞", "Sanya, Hainan (Bureau 5)"], 6: ["青島", "Qingdao (Bureau 6)"] };
@@ -194,7 +241,7 @@ export function needPdf(events, details, limit = 12) {
 export function plaPublic(P, now) {
   const mnd = P.mnd || {}, js = P.js || {};
   const days = (mnd.list || []).map((l) => (mnd.days || {})[l.id]).filter(Boolean).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 14);
-  const events = mergeJs(js.events || [], js.details || {});
+  const events = mergeJs(js.events || [], js.details || {}).map((e) => { const geo = jsGeo(e); return geo.length ? { ...e, geo } : e; });
   return {
     time: now, updated: { mnd: mnd.okAt || null, js: js.okAt || null }, errors: { mnd: mnd.err || null, js: js.err || null },
     mnd: { source: "國防部 MND", url: MND_BASE + "news/plaactlist", attribution: PLA_ATTRIBUTION.mnd, days },

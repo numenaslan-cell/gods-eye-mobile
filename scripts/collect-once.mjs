@@ -81,9 +81,17 @@ async function doAis() {
   const lat = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Latitude != null ? b.Latitude : m.MetaData && (m.MetaData.latitude != null ? m.MetaData.latitude : m.MetaData.Latitude); return typeof v === "number" ? v : null; };
   const lon = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Longitude != null ? b.Longitude : m.MetaData && (m.MetaData.longitude != null ? m.MetaData.longitude : m.MetaData.Longitude); return typeof v === "number" ? v : null; };
   const pri = (m) => { const a = lat(m), o = lon(m), core = a != null && o != null && a >= CORE[0] && a <= CORE[2] && o >= CORE[1] && o <= CORE[3]; return (core ? 0 : 2) + (a == null ? 1 : 0); };
+  // Suspected CCG / PLAN vessels (same rules as proxy/src/ais.mjs, cheap version) are never thinned away, wherever they are in the wide box.
+  const SUS_NAME = /HAI ?JING|CHINA ?COAST ?GUARD|CCG ?\d{3,5}|PLA ?NAVY|PLAN[ -]?\d{2,4}|海警|海軍|海军|解放軍|解放军/i;
+  const susSet = new Set();
+  for (const m of buf.values()) {
+    const mm = String((m.MetaData && m.MetaData.MMSI) || ""), st = m.Message && m.Message.ShipStaticData, nm = (st && st.Name) || (m.MetaData && m.MetaData.ShipName) || "";
+    if (/^413875/.test(mm) || SUS_NAME.test(nm) || (st && st.Type === 35 && /^41[23]/.test(mm))) susSet.add(mm);
+  }
+  const pri0 = pri; const priS = (m) => (susSet.has(String((m.MetaData && m.MetaData.MMSI) || "")) ? -2 : 0) + pri0(m);
   let all = [...buf.values()]; const uniq = all.length;
-  if (all.length > MAX_MSGS) all = all.map((m) => [pri(m), m]).sort((x, y) => x[0] - y[0]).slice(0, MAX_MSGS).map((x) => x[1]);
-  summary.ais.uniqueMsgs = uniq; summary.ais.sent = all.length;
+  if (all.length > MAX_MSGS) all = all.map((m) => [priS(m), m]).sort((x, y) => x[0] - y[0]).slice(0, MAX_MSGS).map((x) => x[1]);
+  summary.ais.uniqueMsgs = uniq; summary.ais.suspects = susSet.size; summary.ais.sent = all.length;
   const j = await withRetry(() => post("/api/ships/ingest", { messages: all }));
   summary.ais.ingest = j; log("aisstream", total, "msgs ->", uniq, "unique ->", all.length, "sent ->", JSON.stringify(j));
 }
