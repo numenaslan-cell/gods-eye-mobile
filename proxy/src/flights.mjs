@@ -15,6 +15,7 @@ export const ADSB_POINTS = [
 export const ADSB_NM = 250;
 export const FLIGHT_BOX = { lamin: 0, lomin: 105, lamax: 45, lomax: 145 }; // the one box the Worker serves (the client's query string is ignored: one cache key, no fan-out abuse)
 export const CORE_BOX = { lamin: 18, lomin: 114, lamax: 29, lomax: 128 };    // the former Taiwan-focused box: always kept in full
+const CORE_TTL_MS = 9000, OUTER_TTL_MS = 45000, STALE_TTL_MS = 180000;
 export const MAX_FLIGHTS = 800;                                              // the client draws one mesh per aircraft; ~190 B each => ≲150 KB JSON (~30 KB gzip)
 const KT_MS = 0.514444, FT_FPM = 1; // ft/min already
 
@@ -141,11 +142,20 @@ export async function collectFlights(opts = {}) {
   const f = opts.fetch || fetch, box = opts.box || FLIGHT_BOX;
   const lol = opts.lolBase || "https://api.adsb.lol", fi = opts.fiBase || "https://opendata.adsb.fi";
   const used = new Set(), errors = [], lists = [];
-  const lolRes = await Promise.all(ADSB_POINTS.map((p) =>
-    getJson(f, `${lol}/v2/point/${p.lat}/${p.lon}/${ADSB_NM}`).then((j) => ({ p, ac: Array.isArray(j.ac) ? j.ac : [] })).catch((e) => ({ p, err: "adsb.lol " + (e.message || e) }))));
+  // Per-circle cache (opts.cache, a Map owned by the Hub DO): core circles refresh every ~10 s, outer circles every 45 s, and a circle that fails (adsb.lol answers 429 when
+  // hit too often) is served from its last good copy for up to 3 min. That keeps the upstream rate at ~2 + 7/4.5 requests per 10 s instead of 9.
+  const cache = opts.cache || new Map(), now0 = (opts.now || Date.now)();
+  const lolRes = await Promise.all(ADSB_POINTS.map((p) => {
+    const k = p.lat + "," + p.lon, c = cache.get(k), ttl = p.core ? CORE_TTL_MS : OUTER_TTL_MS;
+    if (c && now0 - c.at < ttl) return Promise.resolve({ p, list: c.list, cached: true });
+    return getJson(f, `${lol}/v2/point/${p.lat}/${p.lon}/${ADSB_NM}`).then((j) => {
+      const list = (Array.isArray(j.ac) ? j.ac : []).map(normalizeAdsb).filter(Boolean); cache.set(k, { at: now0, list }); return { p, list };
+    }).catch((e) => (c && now0 - c.at < STALE_TTL_MS ? { p, list: c.list, cached: true, stale: "adsb.lol " + (e.message || e) } : { p, err: "adsb.lol " + (e.message || e) }));
+  }));
   for (const r of lolRes) {
     if (r.err) { errors.push(r.err); continue; }
-    used.add("adsb.lol"); lists.push(r.ac.map(normalizeAdsb).filter(Boolean));
+    if (r.stale) errors.push(r.stale + " (served from cache)");
+    used.add("adsb.lol"); lists.push(r.list);
   }
   for (const r of lolRes) {
     if (!r.err || !r.p.core) continue; // adsb.fi (1 req/s) only backs up the Taiwan core circles

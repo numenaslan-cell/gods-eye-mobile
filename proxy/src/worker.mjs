@@ -539,7 +539,9 @@ export class Hub {
   async flightsResponse() {
     const H = { "Content-Type": "application/json" }, now = Date.now(), F = this._fl;
     if (F && now - F.at < 8000) return new Response(F.body, { headers: H });
-    if (!this._flP) this._flP = (async () => { try { const body = JSON.stringify(await collectFlights({ box: FLIGHT_BOX, openskyBase: UPSTREAM })); this._fl = { at: Date.now(), body }; return null; } catch (e) { return String((e && e.message) || e).slice(0, 300); } finally { this._flP = null; } })();
+    if (!this._flP) this._flP = (async () => { try { if (!this._flC) { this._flC = new Map(); try { for (const [k, v] of await this.ctx.storage.list({ prefix: "flc:" })) this._flC.set(k.slice(4), v); } catch { /* cold */ } } /* per-circle cache survives DO eviction */
+        const before = new Map(this._flC), body = JSON.stringify(await collectFlights({ box: FLIGHT_BOX, openskyBase: UPSTREAM, cache: this._flC }));
+        try { const upd = {}; for (const [k, v] of this._flC) if (before.get(k) !== v) upd["flc:" + k] = v; if (Object.keys(upd).length) await this.ctx.storage.put(upd); } catch { /* best effort */ } this._fl = { at: Date.now(), body }; return null; } catch (e) { return String((e && e.message) || e).slice(0, 300); } finally { this._flP = null; } })();
     const err = await this._flP;
     if (!err && this._fl) return new Response(this._fl.body, { headers: H });
     if (this._fl && Date.now() - this._fl.at < 300000) return new Response(this._fl.body, { headers: H });

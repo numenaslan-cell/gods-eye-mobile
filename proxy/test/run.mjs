@@ -109,6 +109,15 @@ await ok("flights: thinning keeps PLA suspects, then the Taiwan core box, then t
   assert.equal(thinFlights(list, 10).length, 5);
   const big = Array.from({ length: 3000 }, (_, i) => mk("h" + i, 30 + (i % 10), 130 + (i % 10), i)); assert.equal(thinFlights(big).length, 800);
 });
+await ok("flights: per-circle cache — outer circles reused for 45 s, core for 9 s; a 429 circle is served from its last good copy (<= 3 min)", async () => {
+  const cache = new Map(); let n = 0, fail = false;
+  const f = async (u) => { n++; if (fail && !/point\/25\.3\//.test(u)) return jr({}, 429); return jr({ ac: [lolAc("a" + n, 25, 121)] }); };
+  let t = 1000000; const now = () => t;
+  await collectFlights({ fetch: f, cache, now }); assert.equal(n, ADSB_POINTS.length);
+  t += 5000; await collectFlights({ fetch: f, cache, now }); assert.equal(n, ADSB_POINTS.length, "everything still fresh");
+  t += 6000; await collectFlights({ fetch: f, cache, now }); assert.equal(n, ADSB_POINTS.length + 2, "only the 2 core circles refreshed after 11 s");
+  t += 40000; fail = true; const r = await collectFlights({ fetch: f, cache, now }); assert.equal(r.source, "adsb.lol"); assert.ok(r.partial.some((e) => /429.*cache/.test(e)), "stale copies are reported"); assert.ok(r.count >= ADSB_POINTS.length);
+});
 await ok("flights: a failing core circle falls back to adsb.fi (aircraft key), no OpenSky call", async () => {
   const calls = [];
   const f = async (u) => { calls.push(u); if (/adsb\.lol.*25\.3/.test(u)) return jr({}, 429); if (/adsb\.lol/.test(u)) return jr({ ac: [lolAc("ccc333", 22, 120)] }); if (/adsb\.fi.*lat\/25\.3\/lon\/121\/dist\/250/.test(u)) return jr({ aircraft: [lolAc("aaa111", 25, 121)] }); throw new Error("unexpected " + u); };
