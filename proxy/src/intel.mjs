@@ -66,7 +66,7 @@ export const JS_CLASSES = {
 };
 const JS_STRAITS = [
   [/沖縄本島-宮古島間|沖宮/, "Miyako Strait (Okinawa–Miyako)"], [/大隅海峡/, "Osumi Strait"], [/奄美大島-横当島間/, "Amami–Yokoate gap"], [/与那国島-西表島間/, "Yonaguni–Iriomote gap"],
-  [/対馬海峡/, "Tsushima Strait"], [/宗谷海峡/, "Soya Strait"], [/津軽海峡/, "Tsugaru Strait"], [/与那台/, "Yonaguni–Taiwan gap"], [/東シナ/, "East China Sea"], [/男女群島/, "Danjo Islands"],
+  [/対馬海峡/, "Tsushima Strait"], [/宗谷海峡/, "Soya Strait"], [/津軽海峡/, "Tsugaru Strait"], [/与那台/, "Yonaguni–Taiwan gap"], [/東シナ/, "East China Sea"], [/男女群島/, "Danjo Islands"], [/黄海/, "Yellow Sea"], [/渤海/, "Bohai Sea"],
 ];
 const CV_EN = { "遼寧": "Liaoning", "山東": "Shandong", "福建": "Fujian" };
 const carrierEn = (c) => { const m = /^空母「([^」]+)」(?:ほか(\d+)隻)?/.exec(c); return m ? "Aircraft carrier " + (CV_EN[m[1]] || m[1]) + (m[2] ? " + " + m[2] + " other ships" : "") : c; };
@@ -156,6 +156,7 @@ const GAZ = { // reference places in Japanese releases -> [lat, lon]
   "南大東島": [25.85, 131.23], "北大東島": [25.95, 131.3], "沖大東島": [24.47, 131.23], "沖ノ鳥島": [20.42, 136.08], "硫黄島": [24.78, 141.32], "父島": [27.1, 142.2], "八丈島": [33.1, 139.8], "伊豆大島": [34.75, 139.4],
   "佐渡島": [38.0, 138.4], "能登半島": [37.5, 137.3], "竜飛岬": [41.25, 140.35], "宗谷岬": [45.52, 141.94], "礼文島": [45.4, 141.04], "利尻島": [45.18, 141.24], "襟裳岬": [41.93, 143.25], "金華山": [38.28, 141.58], "犬吠埼": [35.71, 140.87], "御前崎": [34.6, 138.23], "潮岬沖": [33.43, 135.76],
   "鹿児島": [31.6, 130.55], "長崎": [32.75, 129.87], "福江島": [32.68, 128.84], "甑島": [31.75, 129.85], "馬毛島": [30.74, 130.99], "奄美": [28.3, 129.4], "沖縄": [26.5, 127.95],
+  "済州島": [33.38, 126.55], "青島": [36.07, 120.38], "大連": [38.92, 121.6], "上海": [31.23, 121.47], "山東半島": [37.4, 122.5],
 };
 const DIR_DEG = { "北東": 45, "北西": 315, "南東": 135, "南西": 225, "北": 0, "南": 180, "東": 90, "西": 270 };
 // passages named in the titles -> [centre lat, lon, radius km, English label]; used when there is no "N km from X" sentence (all aircraft releases)
@@ -163,6 +164,7 @@ export const JS_ZONES = [
   [/沖縄本島-宮古島間|沖宮/, [25.6, 126.3, 110, "Miyako Strait (Okinawa–Miyako gap)"]], [/大隅海峡/, [30.9, 131.0, 70, "Osumi Strait"]], [/奄美大島-横当島間/, [28.0, 129.2, 70, "Amami–Yokoate gap"]],
   [/与那国島-西表島間/, [24.4, 123.4, 55, "Yonaguni–Iriomote gap"]], [/与那台/, [24.3, 122.6, 80, "Yonaguni–Taiwan gap"]], [/対馬海峡/, [34.0, 129.5, 110, "Tsushima Strait"]],
   [/宗谷海峡/, [45.75, 142.0, 60, "Soya Strait"]], [/津軽海峡/, [41.5, 140.6, 50, "Tsugaru Strait"]], [/男女群島/, [32.0, 128.4, 60, "Danjo Islands"]],
+  [/渤海/, [38.8, 120.0, 180, "Bohai Sea"]], [/黄海/, [35.5, 123.5, 300, "Yellow Sea"]], [/済州島/, [33.0, 126.5, 80, "Jeju area"]],
 ];
 const R_KM = 6371;
 export function destPoint(lat, lon, bearingDeg, km) {

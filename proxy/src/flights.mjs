@@ -1,6 +1,6 @@
 /* Flights: adsb.lol (primary) -> adsb.fi (fallback, 1 req/s) -> OpenSky (last resort). Normalised to the client's flight format. Pure/injectable. */
 // adsb.lol's maximum radius is 250 nm (463 km), so a 0–45°N / 105–145°E box can't be covered gaplessly with free-plan request budgets (~50 circles).
-// 10 circles cover the places that actually have aircraft: Taiwan + Strait + east coast (`core`, with adsb.fi fallback), Luzon / Philippines, the northern
+// 11 circles (incl. Yellow Sea + Bohai, 2026-11-05) cover the places that actually have aircraft: Taiwan + Strait + east coast (`core`, with adsb.fi fallback), Luzon / Philippines, the northern
 // and southern South China Sea, Okinawa, Kyushu–Seto–Osaka, Tokyo–Nagoya and Hokkaido–Tohoku. ADS-B receivers are sparse over open ocean anyway.
 export const ADSB_POINTS = [
   { lat: 25.3, lon: 121.0, core: true }, { lat: 22.6, lon: 120.8, core: true },
@@ -11,6 +11,8 @@ export const ADSB_POINTS = [
   { lat: 34.0, lon: 132.5 },   // Kyushu / Seto / Kansai
   { lat: 37.0, lon: 139.5 },   // Tokyo / Nagoya / Tohoku south
   { lat: 42.5, lon: 142.5 },   // Hokkaido / Tohoku north
+  { lat: 33.5, lon: 122.5 },   // southern Yellow Sea / Shanghai / Jeju (2026-11-05)
+  { lat: 38.3, lon: 121.0 },   // northern Yellow Sea / Bohai Bay / Shandong / Dalian (2026-11-05)
 ];
 export const ADSB_NM = 250;
 export const FLIGHT_BOX = { lamin: 0, lomin: 105, lamax: 45, lomax: 145 }; // the one box the Worker serves (the client's query string is ignored: one cache key, no fan-out abuse)

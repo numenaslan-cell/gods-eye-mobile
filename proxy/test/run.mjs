@@ -100,8 +100,8 @@ await ok("flights: adsb.lol circles merged and deduped by hex; box crop applied 
   assert.equal(r.source, "adsb.lol"); assert.deepEqual(r.flights.map((x) => x.id).sort(), ["aaa111", "bbb222", "ccc333", "far999"]); assert.equal(r.count, 4); assert.equal(r.total, 4); assert.equal(r.partial.length, ADSB_POINTS.length - 2);
   assert.ok(calls.every((u) => /^https:\/\/api\.adsb\.lol\/v2\/point\/[\d.]+\/[\d.]+\/250$/.test(u)));
 });
-await ok("flights: thinning keeps PLA suspects, then the Taiwan core box, then the highest outer traffic; 10 circles, at most 800 aircraft", () => {
-  assert.equal(ADSB_POINTS.length, 9); assert.deepEqual(FLIGHT_BOX, { lamin: 0, lomin: 105, lamax: 45, lomax: 145 });
+await ok("flights: thinning keeps PLA suspects, then the Taiwan core box, then the highest outer traffic; 11 circles, at most 800 aircraft", () => {
+  assert.equal(ADSB_POINTS.length, 11); assert.deepEqual(FLIGHT_BOX, { lamin: 0, lomin: 105, lamax: 45, lomax: 145 });
   const mk = (id, lat, lon, altFt, pla) => ({ id, lat, lon, altFt, ...(pla ? { pla: true } : {}) });
   const list = [mk("core1", 24, 121, 100), mk("out-hi", 36, 140, 38000), mk("out-lo", 35, 139, 2000), mk("pla", 40, 141, 0, true), mk("core2", 22, 120, 5000)];
   assert.deepEqual(thinFlights(list, 3).map((f) => f.id), ["pla", "core1", "core2"]);

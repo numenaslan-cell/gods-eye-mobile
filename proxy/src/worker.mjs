@@ -1,7 +1,7 @@
 /**
  * God's Eye View // ORB-7 — Cloudflare Worker (free plan).
  *
- *   GET  /api/flights      flights over 0-45N 105-145E (9 adsb.lol circles, <= 800 aircraft; adsb.fi/OpenSky fallbacks), collected in the Hub DO, 10 s Cache API
+ *   GET  /api/flights      flights over 0-45N 105-145E (11 adsb.lol circles incl. Yellow Sea / Bohai, <= 800 aircraft; adsb.fi/OpenSky fallbacks), collected in the Hub DO, 10 s Cache API
  *   GET  /api/states/all   OpenSky CORS proxy (10 s edge cache; legacy route, kept as the client's fallback)
  *   GET  /api/ships        AIS ships around Taiwan, relayed + aggregated from aisstream.io (key stays a Worker secret)
  *   GET  /api/push/config  { enabled, publicKey }  (VAPID public key for the browser)
