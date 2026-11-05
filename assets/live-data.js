@@ -184,11 +184,12 @@
     if (t >= 80 && t < 90) return "TANKER";
     return t >= 20 && t < 30 ? "WING IN GROUND" : "OTHER";
   }
-  // marker colour class: ccg | plan | cargo | tanker | pax | fish | other
+  // marker colour class: ccg | plan | research | cargo | tanker | pax | fish | other | gov
   function shipClass(sh) {
     var t = sh.type || 0;
     if (sh.ccg) return "ccg";
     if (sh.plan) return "plan";
+    if (sh.research) return "research";
     if (sh.gov) return "gov";
     if (t >= 70 && t < 80) return "cargo";
     if (t >= 80 && t < 90) return "tanker";
@@ -201,9 +202,9 @@
     var o = {
       id: s.mmsi, mmsi: s.mmsi, name: s.name || ("MMSI " + s.mmsi), hasName: !!s.name,
       lat: s.lat, lon: s.lon, sogKt: s.sog, cog: s.cog, hdg: course, vMs: moving ? s.sog * 0.514444 : 0,
-      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, plan: !!s.plan, gov: !!s.gov, ccgBy: s.ccgBy || "", hull: s.hull || "", bureau: s.bureau || "", bureauKind: s.bureauKind || "", src: s.src || "ais", t: now - (s.ageSec || 0) * 1000,
+      type: s.type || 0, dest: s.dest || "", ccg: !!s.ccg, plan: !!s.plan, research: !!s.research, researchBy: s.researchBy || "", gov: !!s.gov, ccgBy: s.ccgBy || "", hull: s.hull || "", bureau: s.bureau || "", bureauKind: s.bureauKind || "", src: s.src || "ais", t: now - (s.ageSec || 0) * 1000,
     };
-    o.typeLabel = o.ccg ? "CCG (HEURISTIC)" : o.plan ? "PLAN (HEURISTIC)" : o.gov ? "GOV'T VESSEL (AIS TYPE 55)" : shipTypeLabel(o.type); o.cls = shipClass(o);
+    o.typeLabel = o.ccg ? "CCG (HEURISTIC)" : o.plan ? "PLAN WARSHIP (HEURISTIC)" : o.research ? "CN RESEARCH (HEURISTIC)" : o.gov ? "GOV'T VESSEL (AIS TYPE 55)" : shipTypeLabel(o.type); o.cls = shipClass(o);
     return o;
   }
   function parseShips(json) {

@@ -55,10 +55,12 @@ export function fairTake(items, cap, isFar, share = FAR_SHARE) {
 /** Lower = more interesting. CCG first, then commercial / special-purpose ships, then unknown, then fishing boats (moving before stationary). */
 export function shipRank(s) {
   if (isCcg(s) || isPlan(s)) return 0;
+  if (isResearch(s)) return 0.4;
   if (isGov(s)) return 0.5;
+  if (isLeisureOrFishing(s)) return 5; // filtered from public list; trim first if still in storage
   const t = s.type || 0, moving = s.sog != null && s.sog > 0.5;
   const far = s.lat != null && (s.lat < CORE_BBOX.lamin || s.lat > CORE_BBOX.lamax || s.lon < CORE_BBOX.lomin || s.lon > CORE_BBOX.lomax) ? 0.25 : 0; // outside the Taiwan core: a notch behind
-  if (t === 30 || t === 0) return (moving ? 3 : 4) + far; // fishing / type unknown (mostly small boats)
+  if (t === 0) return (moving ? 3 : 4) + far; // type unknown (mostly small boats)
   return 1 + (moving ? 0 : 0.5) + far;
 }
 
@@ -66,9 +68,11 @@ export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
   const out = [];
   for (const s of Object.values(map)) {
     if (s.lat == null || !s.t || now - s.t > keepFor(s, keepMs)) continue;
+    if (isLeisureOrFishing(s)) continue; // fishing / sailing / pleasure: drop before the 2500 cap so slots go to cargo / CCG / PLAN / research
     const o = { mmsi: s.mmsi, name: s.name || null, lat: s.lat, lon: s.lon, sog: s.sog != null ? s.sog : null, cog: s.cog != null ? s.cog : null, hdg: s.hdg != null ? s.hdg : null, type: s.type || null, dest: s.dest || null, nav: s.nav != null ? s.nav : null, ageSec: Math.round((now - s.t) / 1000), ccg: isCcg(s), plan: isPlan(s), src: s.src || "ais", _r: shipRank(s) };
     const why = ccgWhy(s); if (why) { o.ccgBy = why; const hull = ccgHull(s.name); if (hull) { o.hull = hull; const b = decodeCcgHull(hull); if (b) { o.bureau = b.short; o.bureauKind = b.kind; } } }
     else if (isGov(s)) o.gov = true;
+    const rw = researchWhy(s); if (rw) { o.research = true; o.researchBy = rw; }
     out.push(o);
   }
   out.sort((a, b) => a._r - b._r || a.ageSec - b.ageSec);
@@ -79,11 +83,13 @@ export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
 
 /** Keep the map small enough for one Durable Object value (< 2 MB): drop the least interesting / oldest vessels beyond `max`. */
 export function trimShips(map, max = MAX_SHIPS_STORED) {
-  const keys = Object.keys(map); if (keys.length <= max) return 0;
+  let n = 0;
+  for (const k of Object.keys(map)) if (isLeisureOrFishing(map[k])) { delete map[k]; n++; } // free slots: fishing / yachts never need storage
+  const keys = Object.keys(map); if (keys.length <= max) return n;
   keys.sort((a, b) => shipRank(map[a]) - shipRank(map[b]) || (map[b].t || 0) - (map[a].t || 0));
   const keep = new Set(fairTake(keys, max, (k) => !inCore(map[k])));
-  for (const k of keys) if (!keep.has(k)) delete map[k];
-  return keys.length - max;
+  for (const k of keys) if (!keep.has(k)) { delete map[k]; n++; }
+  return n;
 }
 
 /* ---- MPB Taiwan AIS (交通部航港局 mpbais.motcmpb.gov.tw, undocumented GeoJSON) ---- */
@@ -168,11 +174,46 @@ export function isGov(s) {
  *  Never a fishing-only match (type 30 is excluded from the MMSI path), and anything already flagged as China Coast Guard is not also PLAN. */
 export function isPlan(s) {
   if (isCcg(s)) return false;
-  const raw = s.name || "", name = raw.toUpperCase();
-  if (/(^|[^A-Z])(PLA ?NAVY|PLAN[ -]?\d{2,4})([^A-Z]|$)/.test(name)) return true;
+  const raw = s.name || "", name = raw.toUpperCase(), mmsi = s.mmsi || "";
+  if (/(^|[^A-Z])(PLA ?NAVY|PLAN[ -]?\d{2,4}|PLANS ?\d{2,4})([^A-Z]|$)/.test(name)) return true;
   // pinyin "HAI JUN" is also a common civilian given name (dredgers, cargo, fishing: e.g. "LING HAI JUN 8006", "HAIJUN11") -> only with a military-ish signal
-  if (/(^|[^A-Z])HAI ?JUN([^A-Z]|$)/.test(name)) return s.type === 35 || (!s.type && /^41[23]/.test(s.mmsi || ""));
-  if (/海軍|海军|解放軍|解放军/.test(raw)) return true;
-  if (s.type === 30) return false;
-  return s.type === 35 && /^41[23]/.test(s.mmsi || "");
+  if (/(^|[^A-Z])HAI ?JUN([^A-Z]|$)/.test(name)) return s.type === 35 || (!s.type && /^41[234]/.test(mmsi));
+  if (/海軍|海军|解放軍|解放军|中國人民解放軍|中国人民解放军/.test(raw)) return true;
+  if (s.type === 30 || s.type === 36 || s.type === 37) return false;
+  // AIS type 35 (military ops) under a Chinese MID — the main warship signal when the name is blank/encrypted
+  return s.type === 35 && /^41[234]/.test(mmsi);
 }
+
+/** Fishing (30) / sailing (36) / pleasure craft (37), or an obvious fishing/yacht name when type is missing.
+ *  Never drops vessels already flagged as suspected PLAN / CCG (a CCG hull can still broadcast type 30). */
+const LEISURE_NAME = /漁船|渔船|釣魚|钓鱼|FISHING|FISHER\b|\bFV\b|YACHT|PLEASURE|SAILING|遊艇|游艇|帆船/;
+const FISH_NAME_CN = /[浙閩粵瓊蘇魯遼冀津滬渝][\u4e00-\u9fff]{0,4}漁|MIN ?(?:LONG ?)?YU|ZHE ?YU|YUE ?YU|LU ?YU|SU ?YU|QIONG ?YU|JI ?YU|LIAO ?YU/;
+export function isLeisureOrFishing(s) {
+  if (isCcg(s) || isPlan(s)) return false;
+  const t = s.type || 0;
+  if (t === 30 || t === 36 || t === 37) return true;
+  const raw = s.name || "", name = raw.toUpperCase();
+  if (!raw) return false;
+  if (LEISURE_NAME.test(raw) || LEISURE_NAME.test(name)) return true;
+  if (FISH_NAME_CN.test(raw) || FISH_NAME_CN.test(name)) return true;
+  return false;
+}
+
+/**
+ * Chinese research / survey / oceanographic vessels (heuristic). Why a vessel is labelled (first match wins):
+ *  - "fleet": known PRC research-fleet name (向阳红 / 科学 / 实验 / 探索 / XIANG YANG HONG / KEXUE / SHIYAN / TANSUO / DAYANG …)
+ *  - "name": Chinese MMSI + RESEARCH / SURVEY / OCEANOGRAPHIC / 科考 / 科研 / 勘探 / 调查船 / 探测 …
+ * Never also labelled CCG or PLAN (those take the ⚠️ slot). Type alone is never enough (AIS has no dedicated research code).
+ */
+const RESEARCH_FLEET = /XIANG ?YANG ?HONG|XIANGYANGHONG|向陽紅|向阳红|\bKE ?XUE\b|KEXUE|科學|科学號?|\bSHI ?YAN\b|SHIYAN|實驗|实验|\bTAN ?SUO\b|TANSUO|探索號?|\bDA ?YANG(?: ?YI ?HAO| ?HAO|\d)?\b|DAYANG ?HAO|大洋號?|DONG ?FANG ?HONG|東方紅|东方红|JIAO ?DIAN|蛟龍|蛟龙|YUAN ?WANG|遠望|远望|HAI ?YANG ?(?:DI ?ZHI|DIZHI|LIU)|海洋地質|海洋地质/;
+const RESEARCH_WORD = /RESEARCH|SURVEY(?:OR)?|OCEANOGRAPHIC|科考|科研|勘探|調查船|调查船|探測|探测|考察船|海洋科學|海洋科学|OCEAN ?RESEARCHER|HAI ?KE\b|海科/;
+export function researchWhy(s) {
+  if (isCcg(s) || isPlan(s)) return null;
+  const raw = s.name || "", name = raw.toUpperCase(), cn = /^41[234]/.test(s.mmsi || "");
+  if (!raw) return null;
+  if (RESEARCH_FLEET.test(raw) || RESEARCH_FLEET.test(name)) return "fleet";
+  if (cn && (RESEARCH_WORD.test(raw) || RESEARCH_WORD.test(name))) return "name";
+  // Taiwan "OCEAN RESEARCHER" series (MMSI 416…) is civilian academic — still useful to flag as research but not "Chinese research"; skip non-CN
+  return null;
+}
+export function isResearch(s) { return researchWhy(s) != null; }

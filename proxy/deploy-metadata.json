@@ -2,14 +2,48 @@
   "_comment": "Upload metadata for the gods-eye-opensky-proxy Worker (PUT /accounts/<id>/workers/scripts/gods-eye-opensky-proxy, multipart: 'metadata' + 'worker.js'). ALWAYS send every binding below + keep_bindings:['secret_text'] (keeps AISSTREAM_API_KEY, CWA_API_KEY, INGEST_TOKEN, VAPID_PRIVATE_KEY): a PUT replaces the binding list, so leaving one out silently removes it. GET /api/health reports missing bindings and the collector workflow fails on it.",
   "main_module": "worker.js",
   "compatibility_date": "2025-09-01",
-  "keep_bindings": ["secret_text"],
-  "bindings": [
-    { "type": "durable_object_namespace", "name": "HUB", "class_name": "Hub" },
-    { "type": "kv_namespace", "name": "SUBS", "namespace_id": "b8a90c73b1a242a7b0b592c6624e9d8b" },
-    { "type": "plain_text", "name": "VAPID_PUBLIC_KEY", "text": "BKeK4U9PSEGYWqtX43ITmZUM-0-qC3hdNlT5ofbS6QS8r9VA2IgvOqsnJUEdR5deboKj0IpcEcj971n4XQBtQOg" },
-    { "type": "plain_text", "name": "VAPID_SUBJECT", "text": "mailto:numenaslan-cell@users.noreply.github.com" },
-    { "type": "service", "name": "INTEL", "service": "pla-intel", "environment": "production" },
-    { "type": "service", "name": "FETCHER", "service": "mpb-fetcher", "environment": "production" }
+  "keep_bindings": [
+    "secret_text"
   ],
-  "_secrets_expected": ["AISSTREAM_API_KEY", "CWA_API_KEY", "INGEST_TOKEN", "VAPID_PRIVATE_KEY"]
+  "bindings": [
+    {
+      "type": "durable_object_namespace",
+      "name": "HUB",
+      "class_name": "Hub3"
+    },
+    {
+      "type": "kv_namespace",
+      "name": "SUBS",
+      "namespace_id": "b8a90c73b1a242a7b0b592c6624e9d8b"
+    },
+    {
+      "type": "plain_text",
+      "name": "VAPID_PUBLIC_KEY",
+      "text": "BKeK4U9PSEGYWqtX43ITmZUM-0-qC3hdNlT5ofbS6QS8r9VA2IgvOqsnJUEdR5deboKj0IpcEcj971n4XQBtQOg"
+    },
+    {
+      "type": "plain_text",
+      "name": "VAPID_SUBJECT",
+      "text": "mailto:numenaslan-cell@users.noreply.github.com"
+    },
+    {
+      "type": "service",
+      "name": "INTEL",
+      "service": "pla-intel",
+      "environment": "production"
+    },
+    {
+      "type": "service",
+      "name": "FETCHER",
+      "service": "mpb-fetcher",
+      "environment": "production"
+    }
+  ],
+  "_secrets_expected": [
+    "AISSTREAM_API_KEY",
+    "CWA_API_KEY",
+    "INGEST_TOKEN",
+    "VAPID_PRIVATE_KEY"
+  ],
+  "_migrations_applied": "v1=Hub; v2=Hub->Hub2; v3=Hub2->Hub3; idFromName main->hub-v3 (force fresh isolate 2026-11-05)"
 }

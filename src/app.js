@@ -280,6 +280,8 @@
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["🚫 隱藏漁船與遊艇　", "地圖不再顯示漁船（AIS 類型 30）與帆船／遊艇（36–37），以及名稱明顯為漁船／遊艇的船隻，把名額留給貨輪、油輪、客輪、政府船與可疑共軍／海警。已標為疑似海警或共軍的船隻（即使類型為 30）仍會保留。（2026-11-05）"],
+    ["🔬 標示中國科研船　", "新增「⚠️ 疑似中國科研船」：名稱符合向陽紅／科學／實驗／探索／大洋／遠望等已知科考船隊，或中國籍 MMSI 且名稱含 research／survey／科考／科研／勘探等，以橘色警示標示，並附「高信心／推測」信心標籤。共軍軍艦（疑似共軍軍艦）與海警同級醒目。（2026-11-05）"],
     ["🌊 黃海、渤海納入涵蓋　", "航班新增兩個 ADS-B 收集圈（南黃海／上海／濟州、北黃海／渤海灣／山東／大連），黃海（約 31–41°N、117–127°E）與渤海灣的航班現在都會顯示；船舶 AIS 與地震（M4.5+）本來就涵蓋此範圍。日本統合幕僚監部通報若提到「黄海」「渤海」「済州島」，也會標示概略位置。推播維持不變：台灣周邊 M4.5+、其他區域 M6.5+。（2026-11-05）"],
     ["🖐 放大後拖曳更穩　", "手機放大地圖後，拖曳旋轉的速度會依縮放程度自動變慢、慣性滑動也縮短，不會一滑就跑太遠；縮小（預設廣域）時的手感維持不變。（2026-11-05）"],
     ["◆ 全海域標示共軍艦機　", "共軍／海警／共機的疑似標示（MMSI 413875、PLAN／海警名稱與舷號、412/413＋35 類、ICAO 0x7A1000–0x7A4FFF、軍用旗標與呼號）現在套用到整個 0–45°N、105–145°E 的 AIS 與 ADS-B 資料，不只台灣周邊。另外新增「◆ 官方通報位置（概略）」：把日本統合幕僚監部公布的共軍艦艇／軍機目擊位置（例如「宮古島の南東約210km」、沖宮、大隅海峡）換算成地圖上的大約位置與不確定圈，標明日期、來源、信心「確認」。工具列的 ◆ 可開關。提醒：軍艦軍機多半關閉 AIS／ADS-B，地圖只顯示偵測到或官方通報的位置，沒標示不代表沒有；官方通報位置是當時的概略位置，不是即時位置。（2026-11-04）"],
@@ -304,8 +306,8 @@
   function quakeAgo(t) { var m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? m + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; }
 
   /* ---- ship marker colours by class (distinct from the white aircraft cones) ---- */
-  var SHIP_COLORS = { cargo: 0x2ee6ff, tanker: 0xff9f1c, pax: 0xd18bff, fish: 0x6dff8a, other: 0x9aa7b0, ccg: 0xff3b30, plan: 0xff0055, gov: 0xffb000 };
-  var SHIP_CSS = { cargo: "#2ee6ff", tanker: "#ff9f1c", pax: "#d18bff", fish: "#6dff8a", other: "#9aa7b0", ccg: "#ff3b30", plan: "#ff0055", gov: "#ffb000" };
+  var SHIP_COLORS = { cargo: 0x2ee6ff, tanker: 0xff9f1c, pax: 0xd18bff, fish: 0x6dff8a, other: 0x9aa7b0, ccg: 0xff3b30, plan: 0xff0055, research: 0xff6b00, gov: 0xffb000 };
+  var SHIP_CSS = { cargo: "#2ee6ff", tanker: "#ff9f1c", pax: "#d18bff", fish: "#6dff8a", other: "#9aa7b0", ccg: "#ff3b30", plan: "#ff0055", research: "#ff6b00", gov: "#ffb000" };
 
   /* ---- marker silhouettes (unit size, nose / bow = +z). Aircraft = plane with swept wings; ships = pointed hull with a deckhouse.
      Convex pieces are shared by the 3-D geometry (vector triangles -> razor sharp at any DPR) and the legend SVGs. ---- */
@@ -337,7 +339,7 @@
     return h("svg", { width: sz, height: sz, viewBox: "-0.62 -0.62 1.24 1.24", "aria-hidden": true, style: { flex: "none" } },
       pieces.map(function (pc, i) { return h("polygon", { key: i, points: pc.pts.map(function (q) { return q[0] + "," + (-q[1]); }).join(" "), fill: p.color, fillOpacity: pc.fill < 1 ? 0.45 : 1, stroke: "#02060a", strokeWidth: 0.07, strokeLinejoin: "round", paintOrder: "stroke" }); }));
   }
-  var WARN_TAGS = { ccg: "⚠️ 疑似海警", plan: "⚠️ 疑似共軍", air: "⚠️ 疑似共機", off: "◆ 官方通報位置（概略）" };
+  var WARN_TAGS = { ccg: "⚠️ 疑似海警", plan: "⚠️ 疑似共軍軍艦", research: "⚠️ 疑似中國科研船", air: "⚠️ 疑似共機", off: "◆ 官方通報位置（概略）" };
   /* ---- officially reported positions (Japan Joint Staff releases, geocoded by the Worker: reference place + bearing + distance, or the named passage) ---- */
   var OFF_MAX_AGE = 7 * 86400000;
   function offTime(ev) { var t = Date.parse(ev.seen || ev.date || ""); return isFinite(t) ? t : 0; }
@@ -364,7 +366,8 @@
   var CONF = { sure: "確認", high: "高信心", guess: "推測" };
   function shipConf(sh) {
     if (sh.ccg) return sh.ccgBy === "name" || sh.ccgBy === "known" ? "high" : "guess"; // name matches a CCG hull pattern (or was seen earlier) vs MMSI 413875xxx block only
-    if (sh.plan) return /PLA ?NAVY|PLAN[ -]?\d|海軍|海军|解放軍|解放军/i.test(sh.name || "") ? "high" : "guess"; // PLA-Navy name vs MMSI 412/413 + type 35 only
+    if (sh.plan) return /PLA ?NAVY|PLAN[ -]?\d|海軍|海军|解放軍|解放军|中國人民解放軍|中国人民解放军/i.test(sh.name || "") ? "high" : "guess"; // PLA-Navy name vs MMSI 412/413/414 + type 35 only
+    if (sh.research) return sh.researchBy === "fleet" ? "high" : "guess"; // known PRC research fleet name vs Chinese MMSI + research/survey word
     return "guess"; // 政府船舶 (AIS type 55 under a Chinese MMSI) is an inference
   }
   function airConf(fl) {
@@ -375,7 +378,7 @@
   function confNote(key) {
     return h("p", { key: key || "confleg", className: "ge-note ge-conflegend" },
       h("b", null, "信心標示　"), confBadge("sure", "a"), " 官方公布資料（國防部 MND／日本統合幕僚監部）· ", confBadge("high", "b"), " 多項獨立訊號相符（如名稱含 CCG／海警；軍籍旗標＋中國 ICAO 位址＋機型）· ", confBadge("guess", "c"),
-      " 僅憑單一規則（MMSI 413875 號段、ICAO 0x7A1000–0x7A4FFF 位址段、政府船舶／55 類推論）。除「確認」外皆為推測，非官方認定。",
+      " 僅憑單一規則（MMSI 413875 號段、ICAO 0x7A1000–0x7A4FFF 位址段、政府船舶／55 類推論、中國籍＋科研關鍵字）。除「確認」外皆為推測，非官方認定。",
       h("br", null), h("b", null, "⚠ 並非全部　"), "地圖只顯示「偵測到」（AIS／ADS-B）或「官方通報」的位置；軍艦、軍機多半關閉 AIS／ADS-B，沒標示不代表沒有。◆ 官方通報位置（概略）是通報當時的大約位置（含不確定圈），不是即時位置。");
   }
   /* ---- data freshness: "資料更新於 N 分鐘前", amber past staleMin ---- */
@@ -902,7 +905,7 @@
       // ships: flat hull-shaped markers (bow = +Z), coloured by class — visually distinct from the white aircraft cones
       var shipGroup = new T.Group(); scene.add(shipGroup);
       var hullGeo = shapeGeometry(HULL_PIECES, 1.22);
-      var shipMats = {}; Object.keys(SHIP_COLORS).forEach(function (k) { shipMats[k] = new T.MeshBasicMaterial({ color: SHIP_COLORS[k], vertexColors: true, transparent: true, opacity: k === "ccg" || k === "plan" ? 1 : 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }); });
+      var shipMats = {}; Object.keys(SHIP_COLORS).forEach(function (k) { shipMats[k] = new T.MeshBasicMaterial({ color: SHIP_COLORS[k], vertexColors: true, transparent: true, opacity: k === "ccg" || k === "plan" || k === "research" ? 1 : 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }); });
       var shipSelMat = new T.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
       var shipMeshes = {}; // id -> {mesh, sh}
       // earthquakes: pulsing rings sized by magnitude + a solid core (rings/discs built by hand: the vendor bundle has no Ring/Circle geometry)
@@ -979,7 +982,7 @@
 
       function syncShips() {
         var st = Data.state.ships, seen = {};
-        warnShipIds = st.list.filter(function (x) { return x.ccg || x.plan; }).map(function (x) { return x.id; });
+        warnShipIds = st.list.filter(function (x) { return x.ccg || x.plan || x.research; }).map(function (x) { return x.id; });
         st.list.forEach(function (sh) {
           seen[sh.id] = 1;
           var e = shipMeshes[sh.id];
@@ -1087,10 +1090,10 @@
           var pr = tmpWv.project(camera); if (pr.z >= 1 || Math.abs(pr.x) > 1.08 || Math.abs(pr.y) > 1.08) return;
           cands.push({ key: kind + ":" + id, kind: kind, name: name, conf: conf, xw: xw, x: (pr.x * 0.5 + 0.5) * W, y: (-pr.y * 0.5 + 0.5) * H, d: pr.x * pr.x + pr.y * pr.y });
         }
-        if (lay.ships) warnShipIds.forEach(function (id) { var e = shipMeshes[id]; if (e) add(e.sh.plan ? "plan" : "ccg", id, e.mesh, e.sh.name, shipConf(e.sh)); });
+        if (lay.ships) warnShipIds.forEach(function (id) { var e = shipMeshes[id]; if (e) add(e.sh.plan ? "plan" : e.sh.ccg ? "ccg" : "research", id, e.mesh, e.sh.name, shipConf(e.sh)); });
         if (lay.flights) warnFlightIds.forEach(function (id) { var e = meshes[id]; if (e) add("air", id, e.mesh, e.fl.callsign, airConf(e.fl)); });
         if (lay.official) offGeo.forEach(function (o) { var d0 = (Date.now() - o.m.t) / 86400000; add("off", o.id, { position: o.pos }, fmtSeenShort(o.m) + " · " + o.m.g.label, "sure", d0); });
-        var PRI = { plan: 0, off: 1, ccg: 2, air: 3 };
+        var PRI = { plan: 0, off: 1, ccg: 2, research: 3, air: 4 };
         cands.sort(function (a, b) { return PRI[a.kind] - PRI[b.kind] || (a.kind === "off" ? a.xw - b.xw : a.d - b.d); });
         var placed = [], showName = camLen < 1.8;
         cands.slice(0, 16).forEach(function (c, i) {
@@ -1190,7 +1193,7 @@
           tmpTarget.copy(sv).add(tmpDir); se.mesh.up.copy(tmpUp); se.mesh.lookAt(tmpTarget);
           var isSelS = sid === selShipRef.current;
           se.mesh.material = isSelS ? shipSelMat : shipMats[se.cls];
-          var warnS = sh.ccg || sh.plan, ss2 = upx * (isSelS ? 20 : warnS ? 20 : shipPx); se.mesh.scale.set(ss2, ss2, ss2); se.mesh.renderOrder = warnS || isSelS ? 5 : 2;
+          var warnS = sh.ccg || sh.plan || sh.research, ss2 = upx * (isSelS ? 20 : warnS ? 20 : shipPx); se.mesh.scale.set(ss2, ss2, ss2); se.mesh.renderOrder = warnS || isSelS ? 5 : 2;
           se.mesh.visible = !(thin && !warnS && !isSelS && sh.vMs === 0 && (sh.cls === "fish" || sh.cls === "other"));
           if (isSelS) { selSh = sh; selShPos = { lat: sp.lat, lon: sp.lon, v: sv }; }
           if (doCount && tmpUp.dot(camN) > 1 / camLen - 0.02) { var q = sv.clone().project(camera); if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1) onScreen++; }
@@ -1360,7 +1363,7 @@
           h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Previous ship", onClick: function () { cycleShip(-1); } }, "‹"),
           h("div", { className: "ge-pick-mid" },
             h("b", { className: "ge-cs", style: { color: SHIP_CSS[selShip.cls] } }, selShip.name),
-            h("small", null, "MMSI " + selShip.mmsi + " · " + selShip.typeLabel + (selShip.ccg || selShip.plan || selShip.gov ? " · " + CONF[shipConf(selShip)] : ""))),
+            h("small", null, "MMSI " + selShip.mmsi + " · " + selShip.typeLabel + (selShip.ccg || selShip.plan || selShip.research || selShip.gov ? " · " + CONF[shipConf(selShip)] : ""))),
           h("button", { type: "button", className: "ge-btn ge-sq", "aria-label": "Next ship", onClick: function () { cycleShip(1); } }, "›")));
         bits.push(h("dl", { className: "ge-grid", key: "grid" },
           [["SPD", selShip.sogKt != null ? selShip.sogKt.toFixed(1) + " kn" : "--"],
@@ -1377,10 +1380,10 @@
       }
       bits.push(h("div", { key: "legend", className: "ge-legend" },
         h("span", null, h(ShapeIcon, { kind: "plane", color: "#ffffff", size: 15 }), "AIRCRAFT"),
-        [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["fish", "FISHING"], ["other", "OTHER"], ["ccg", "疑似海警"], ["plan", "疑似共軍"], ["gov", "政府船舶（推測）"]].map(function (c) {
+        [["cargo", "CARGO"], ["tanker", "TANKER"], ["pax", "PAX"], ["other", "OTHER"], ["ccg", "疑似海警"], ["plan", "疑似共軍軍艦"], ["research", "疑似中國科研船"], ["gov", "政府船舶（推測）"]].map(function (c) {
           return h("span", { key: c[0] }, h(ShapeIcon, { kind: "hull", color: SHIP_CSS[c[0]], size: 15 }), c[1]);
         })));
-      if (ccgList.length || planList.length || sList.some(function (x) { return x.gov; })) bits.push(confNote("sconf"));
+      if (ccgList.length || planList.length || sList.some(function (x) { return x.gov || x.research; })) bits.push(confNote("sconf"));
       bits.push(h("p", { key: "src", className: "ge-src" }, "AIS: aisstream.io + 交通部航港局 (MPB) 臺灣海域船舶即時資訊, merged by MMSI via own Worker · updated " + ago(ships.updated) + " ago · not for navigation · 疑似海警 / 疑似共軍 flags are name / type / MMSI heuristics, not identifications; 政府船舶 = AIS type 55 only, unverified"));
       return bits;
     }

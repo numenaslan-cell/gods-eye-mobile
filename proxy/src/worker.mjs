@@ -22,7 +22,7 @@
 import createPasses from "../../assets/passes.js";
 import satellite from "../../assets/vendor/satellite.min.js";
 import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
-import { normalizeMpbCollection, applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES, keepFor } from "./ais.mjs";
+import { normalizeMpbCollection, applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES, keepFor, MAX_SHIPS_STORED } from "./ais.mjs";
 import { plaPublic, pruneJsEvents, sanitizeJsDetail, sanitizeMndDay } from "./intel.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
@@ -73,7 +73,7 @@ export default {
       const cache = typeof caches !== "undefined" ? caches.default : null;
       const key = new Request(url.origin + "/api/flights?v=2");
       if (cache) { const hit = await cache.match(key); if (hit) return new Response(hit.body, { status: 200, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=10", "X-Cache": "HIT" }) }); }
-      const hubF = env.HUB ? env.HUB.get(env.HUB.idFromName("main")) : null;
+      const hubF = env.HUB ? env.HUB.get(env.HUB.idFromName("hub-v3")) : null;
       if (!hubF) return json(cors, { error: "no hub" }, 503);
       const r = await hubF.fetch("https://hub/flights");
       if (!r.ok) return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "no-store" }) });
@@ -90,7 +90,7 @@ export default {
       return new Response(upstream.body, { status: upstream.status, headers });
     }
 
-    const hub = env.HUB ? env.HUB.get(env.HUB.idFromName("main")) : null;
+    const hub = env.HUB ? env.HUB.get(env.HUB.idFromName("hub-v3")) : null;
 
     if (request.method === "GET" && p === "/api/health") { // ship-data / MPB watchdog state; HTTP 503 when there are 0 ships or MPB is older than 15 min
       if (!hub) return json(cors, { ok: false, error: "no hub" }, 503);
@@ -101,7 +101,7 @@ export default {
       if (!hub || !(env.AISSTREAM_API_KEY || env.INGEST_TOKEN)) return json(cors, { error: "AIS not configured" }, 503);
       const r = await hub.fetch("https://hub/ships");
       // stream the body through untouched: re-parsing a few hundred KB of JSON would eat the 10 ms CPU budget of the free plan
-      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=20" }) });
+      return new Response(r.body, { status: r.status, headers: cors({ "Content-Type": "application/json", "Cache-Control": "public, max-age=20", "X-GE-Code": "ships-filter-v3" }) });
     }
     if (request.method === "POST" && p === "/api/ships/ingest") {
       // Optional relay: a collector running on a non-datacenter IP (scripts/ais-collector.mjs) posts aisstream messages here,
@@ -178,7 +178,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     if (!env.HUB) return;
-    const hub = env.HUB.get(env.HUB.idFromName("main"));
+    const hub = env.HUB.get(env.HUB.idFromName("hub-v3"));
     ctx.waitUntil(hub.fetch("https://hub/cron", { method: "POST" }).then((r) => r.json()).then(async (rep) => {
       // watchdog: MPB older than 7 min (a 5-min fetcher cycle was missed) -> ask the Taiwan-placed mpb-fetcher to run now (service binding FETCHER; same INGEST_TOKEN)
       if (!(rep && rep.mpb && rep.mpb.needHeal) || !env.FETCHER || !env.INGEST_TOKEN) return;
@@ -201,7 +201,7 @@ export default {
 };
 
 /* ----------------------------------------------------- Durable Object: AIS + alerts */
-export class Hub {
+export class Hub3 {
   constructor(ctx, env) {
     this.ctx = ctx; this.env = env;
     this.ships = {}; this.lastCollect = 0; this.lastAttempt = 0; this.lastError = ""; this.collecting = false; this.everCollected = false;
@@ -530,9 +530,11 @@ export class Hub {
   async shipsResponse() {
     const now = Date.now(), age = now - this.lastCollect;
     if (!this.collecting && now - this.lastAttempt > STALE_MS && age > STALE_MS && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 50);
+    // drop fishing/yachts from storage on read so a DO that still holds them frees slots without waiting for the next ingest
+    if (!this._leisureTrimmed) { trimShips(this.ships, MAX_SHIPS_STORED); this._leisureTrimmed = true; try { await this.ctx.storage.put("ships", this.ships); } catch { /* best effort */ } }
     const list = publicShips(this.ships, now, KEEP_MS);
     const warming = !this.everCollected && !this.lastError;
-    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, aisAgeSec: this.aisAt ? Math.round((now - this.aisAt) / 1000) : null, collectorAgeSec: this.collectorAt ? Math.round((now - this.collectorAt) / 1000) : null, mpbStale: !this.mpbAt || now - this.mpbAt > MPB_STALE_SEC * 1000, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
+    return new Response(JSON.stringify({ time: now, updated: this.lastCollect, ageSec: this.lastCollect ? Math.round(age / 1000) : null, collecting: this.collecting, warming, error: this.lastError || null, code: "ships-filter-v3", diag: this.diag || null, cron: this.cron || null, mpbAgeSec: this.mpbAt ? Math.round((now - this.mpbAt) / 1000) : null, aisAgeSec: this.aisAt ? Math.round((now - this.aisAt) / 1000) : null, collectorAgeSec: this.collectorAt ? Math.round((now - this.collectorAt) / 1000) : null, mpbStale: !this.mpbAt || now - this.mpbAt > MPB_STALE_SEC * 1000, count: list.length, total: list.total || list.length, ships: list }), { status: this.lastError && !list.length ? 502 : 200 });
   }
 
   /** Flights for the whole region: single-flight + 8 s memo, stale copy (<= 5 min) when every source fails. Runs here (30 s CPU) because 10 circles of adsb.lol JSON are too much for the 10 ms front Worker. */

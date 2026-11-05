@@ -1,7 +1,7 @@
 // node proxy/test/run.mjs  — unit tests for the Worker's pure logic (no network, no Cloudflare runtime needed; Node >= 20).
 import assert from "node:assert/strict";
 import { encryptPayload, vapidAuthHeader, generateVapidKeys, b64uDecode, b64uEncode } from "../src/webpush.mjs";
-import { normalizeMpbCollection, applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan, isGov, ccgWhy } from "../src/ais.mjs";
+import { normalizeMpbCollection, applyAis, applyMpb, normalizeMpb, parseMpbTime, trimShips, publicShips, isCcg, isPlan, isGov, ccgWhy, isLeisureOrFishing, isResearch, researchWhy } from "../src/ais.mjs";
 import { selectQuakes, validateSubscription } from "../src/logic.mjs";
 import { readFileSync } from "node:fs";
 import { cwaData, normalizeCwaQuakes, normalizeTyphoons, normalizeWarnings, groupWarnings, mergeQuakes } from "../src/cwa.mjs";
@@ -167,14 +167,21 @@ await ok("MPB + aisstream merge by MMSI: fresher position wins, statics filled f
   applyAis(map, { MessageType: "PositionReport", MetaData: { MMSI: 412446258 }, Message: { PositionReport: { UserID: 412446258, Latitude: 24.3, Longitude: 118.5, Sog: 8 } } }, t0 + 5000);
   assert.equal(map["412446258"].src, "both");
 });
-await ok("publicShips: cap keeps CCG + commercial first, reports total; trimShips bounds storage", () => {
+await ok("publicShips: drops fishing/yachts, keeps CCG (even type 30) + commercial; trimShips frees leisure first", () => {
   const map = {}, now = 1e12;
-  for (let i = 0; i < 50; i++) map["41600" + String(1000 + i).padStart(4, "0")] = { mmsi: "41600" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - i * 1000, type: 30, sog: 0 };           // stationary fishing
-  for (let i = 0; i < 10; i++) map["35300" + String(1000 + i).padStart(4, "0")] = { mmsi: "35300" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - 600000 - i, type: 70, sog: 12 };  // moving cargo (older)
-  map["412000001"] = { mmsi: "412000001", name: "HAIJING 2901", lat: 25, lon: 122, t: now - 900000, type: 30, sog: 0 };
+  for (let i = 0; i < 50; i++) map["41600" + String(1000 + i).padStart(4, "0")] = { mmsi: "41600" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - i * 1000, type: 30, sog: 0 };           // stationary fishing -> filtered
+  for (let i = 0; i < 5; i++) map["41610" + String(1000 + i).padStart(4, "0")] = { mmsi: "41610" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - i * 1000, type: 37, sog: 2, name: "YACHT " + i };
+  for (let i = 0; i < 10; i++) map["35300" + String(1000 + i).padStart(4, "0")] = { mmsi: "35300" + String(1000 + i).padStart(4, "0"), lat: 24, lon: 121, t: now - 600000 - i, type: 70, sog: 12 };  // moving cargo
+  map["412000001"] = { mmsi: "412000001", name: "HAIJING 2901", lat: 25, lon: 122, t: now - 900000, type: 30, sog: 0 }; // CCG even if type 30
+  map["412999001"] = { mmsi: "412999001", name: "XIANG YANG HONG 01", lat: 36, lon: 123, t: now - 1000, type: 90, sog: 8 };
+  map["412999002"] = { mmsi: "412999002", name: "OCEAN SURVEYOR 1", lat: 35, lon: 122, t: now - 1000, type: 90, sog: 5 };
   const l = publicShips(map, now, 1800000, 12);
-  assert.equal(l.length, 12); assert.equal(l.total, 61); assert.equal(l[0].mmsi, "412000001"); assert.ok(l[0].ccg); assert.ok(l.slice(1, 11).every((x) => x.type === 70)); assert.equal(l[11].type, 30); assert.ok(!("_r" in l[0]));
-  assert.equal(trimShips(map, 20), 41); assert.equal(Object.keys(map).length, 20); assert.ok(map["412000001"] && map["353001000"]);
+  assert.equal(l.total, 13); // 10 cargo + 1 CCG + 2 research; fishing/yachts dropped
+  assert.equal(l[0].mmsi, "412000001"); assert.ok(l[0].ccg);
+  assert.ok(l.some((x) => x.research && x.researchBy === "fleet"));
+  assert.ok(l.some((x) => x.research && x.researchBy === "name"));
+  assert.ok(l.every((x) => x.type !== 30 || x.ccg)); assert.ok(l.every((x) => x.type !== 37)); assert.ok(!("_r" in l[0]));
+  const dropped = trimShips(map, 20); assert.ok(dropped >= 50); assert.equal(Object.keys(map).length, 13); assert.ok(map["412000001"] && map["353001000"] && map["412999001"]);
 });
 
 const fx = (n) => JSON.parse(readFileSync(new URL("./fixtures/" + n, import.meta.url), "utf8"));
@@ -398,8 +405,8 @@ await ok("MPB raw collection (what mpb-fetcher now streams to the Durable Object
 });
 
 await ok("collector watchdog: stale collector + token -> one workflow_dispatch per 15 min; no token -> never", async () => {
-  const { Hub } = await import("../src/worker.mjs");
-  const mk = (env) => { const store = new Map(); const ctx = { blockConcurrencyWhile: (f) => f(), storage: { get: async (k) => (Array.isArray(k) ? new Map() : store.get(k)), put: async (k, v) => { if (typeof k === "string") store.set(k, v); }, getAlarm: async () => null } }; return new Hub(ctx, env); };
+  const { Hub3 } = await import("../src/worker.mjs");
+  const mk = (env) => { const store = new Map(); const ctx = { blockConcurrencyWhile: (f) => f(), storage: { get: async (k) => (Array.isArray(k) ? new Map() : store.get(k)), put: async (k, v) => { if (typeof k === "string") store.set(k, v); }, getAlarm: async () => null } }; return new Hub3(ctx, env); };
   await new Promise((r) => setTimeout(r, 5));
   const now = Date.now();
   const noTok = mk({}); assert.equal(noTok.collectorCheck(now).needDispatch, false); assert.equal(noTok.collectorCheck(now).stale, true); assert.equal(noTok.collectorCheck(now).dispatchEnabled, false);
@@ -420,4 +427,18 @@ await ok("Joint Staff place -> approximate position: reference + 8-point bearing
   assert.equal(jsGeo({ place: "口永良部島(鹿児島県)の西約200kmの海域", groups: [] })[0].basis, "bearing");
   const pub = plaPublic({ mnd: { list: [], days: {} }, js: { events: [{ id: "p20261102_04", date: "2026-11-02", title: "t", kind: "ship", groups: [], place: "宮古島(沖縄県)の南東約210kmの海域" }], details: {} } }, Date.now());
   assert.ok(pub.js.events[0].geo && pub.js.events[0].geo[0].lat < 24);
+});
+
+await ok("leisure filter + Chinese research heuristic", () => {
+  assert.ok(isLeisureOrFishing({ type: 30, mmsi: "416000001" }));
+  assert.ok(isLeisureOrFishing({ type: 37, name: "SEA BREEZE", mmsi: "319000001" }));
+  assert.ok(isLeisureOrFishing({ type: 0, name: "FISHING STAR", mmsi: "416000002" }));
+  assert.ok(!isLeisureOrFishing({ type: 30, name: "HAIJING 2901", mmsi: "412000001" }), "CCG type 30 kept");
+  assert.ok(!isLeisureOrFishing({ type: 70, mmsi: "353001000" }));
+  assert.equal(researchWhy({ name: "XIANG YANG HONG 06", mmsi: "412123456", type: 90 }), "fleet");
+  assert.equal(researchWhy({ name: "KEXUE", mmsi: "413000001", type: 90 }), "fleet");
+  assert.equal(researchWhy({ name: "OCEAN SURVEYOR 1", mmsi: "412000222", type: 90 }), "name");
+  assert.equal(researchWhy({ name: "NEW OCEANRESEARCHER3", mmsi: "416005696", type: 99 }), null, "Taiwan research not flagged as PRC");
+  assert.ok(isPlan({ name: "x", type: 35, mmsi: "414123456" }), "type 35 + 414 MID is PLAN");
+  assert.ok(isPlan({ name: "解放军海军", mmsi: "1" }));
 });
