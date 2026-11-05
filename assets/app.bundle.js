@@ -4112,6 +4112,7 @@ void main() {
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["🚢 黃海船位加強　", "aisstream 改為分區訂閱（台灣、黃海／渤海、南海、東海／日本），上傳時保留約四分之一名額給黃海，避免被其他海域擠掉；手機放大時也不再把黃海上的無類型船位藏起來。（2026-11-05）"],
     ["🚫 隱藏漁船與遊艇　", "地圖不再顯示漁船（AIS 類型 30）與帆船／遊艇（36–37），以及名稱明顯為漁船／遊艇的船隻，把名額留給貨輪、油輪、客輪、政府船與可疑共軍／海警。已標為疑似海警或共軍的船隻（即使類型為 30）仍會保留。（2026-11-05）"],
     ["🔬 標示中國科研船　", "新增「⚠️ 疑似中國科研船」：名稱符合向陽紅／科學／實驗／探索／大洋／遠望等已知科考船隊，或中國籍 MMSI 且名稱含 research／survey／科考／科研／勘探等，以橘色警示標示，並附「高信心／推測」信心標籤。共軍軍艦（疑似共軍軍艦）與海警同級醒目。（2026-11-05）"],
     ["🌊 黃海、渤海納入涵蓋　", "航班新增兩個 ADS-B 收集圈（南黃海／上海／濟州、北黃海／渤海灣／山東／大連），黃海（約 31–41°N、117–127°E）與渤海灣的航班現在都會顯示；船舶 AIS 與地震（M4.5+）本來就涵蓋此範圍。日本統合幕僚監部通報若提到「黄海」「渤海」「済州島」，也會標示概略位置。推播維持不變：台灣周邊 M4.5+、其他區域 M6.5+。（2026-11-05）"],
@@ -5026,7 +5027,9 @@ void main() {
           var isSelS = sid === selShipRef.current;
           se.mesh.material = isSelS ? shipSelMat : shipMats[se.cls];
           var warnS = sh.ccg || sh.plan || sh.research, ss2 = upx * (isSelS ? 20 : warnS ? 20 : shipPx); se.mesh.scale.set(ss2, ss2, ss2); se.mesh.renderOrder = warnS || isSelS ? 5 : 2;
-          se.mesh.visible = !(thin && !warnS && !isSelS && sh.vMs === 0 && (sh.cls === "fish" || sh.cls === "other"));
+          // close zoom: only declutter stationary unknowns over Taiwan (fishing is already filtered server-side). Yellow Sea / Bohai "other" ships stay visible.
+          var nearTw = sh.lat >= 21.5 && sh.lat <= 26.5 && sh.lon >= 119 && sh.lon <= 123;
+          se.mesh.visible = !(thin && nearTw && !warnS && !isSelS && sh.vMs === 0 && (sh.cls === "fish" || sh.cls === "other"));
           if (isSelS) { selSh = sh; selShPos = { lat: sp.lat, lon: sp.lon, v: sv }; }
           if (doCount && tmpUp.dot(camN) > 1 / camLen - 0.02) { var q = sv.clone().project(camera); if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1) onScreen++; }
         }

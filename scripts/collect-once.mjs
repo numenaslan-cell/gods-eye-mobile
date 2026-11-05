@@ -15,8 +15,11 @@ const WORKER = ((process.env.WORKER_URL || "").trim() || "https://gods-eye-opens
 const AIS_SEC = process.env.AIS_SEC === undefined ? 60 : +process.env.AIS_SEC;
 const MPB_URL = process.env.MPB_URL || "https://mpbais.motcmpb.gov.tw/aismpb/tools/geojsonais.ashx";
 const MB = (process.env.MPB_BBOX || "19,116,28,126").split(",").map(Number), MPB_BOX = { lamin: MB[0], lomin: MB[1], lamax: MB[2], lomax: MB[3] };
-const BB = (process.env.BBOX || "0,105,45,145").split(",").map(Number); // South China Sea + Taiwan + W Pacific (to 145E) + Japan (to 45N): lamin,lomin,lamax,lomax
-const CORE = (process.env.CORE_BBOX || "18,114,29,128").split(",").map(Number); // Taiwan core: its messages go first when the upload is capped
+const BB = (process.env.BBOX || "0,105,45,145").split(",").map(Number); // fallback single box (lamin,lomin,lamax,lomax)
+const CORE = (process.env.CORE_BBOX || "18,114,29,128").split(",").map(Number); // Taiwan core: preferred when the upload is capped
+// Multiple aisstream boxes (semicolon-separated lamin,lomin,lamax,lomax). A single huge box under-samples the Yellow Sea / Bohai; split boxes pull traffic from each region.
+const BOXES = (process.env.AIS_BOXES || "18,114,29,128;31,117,41,127;0,105,20,125;20,125,35,145;35,125,45,145").split(";").map((b) => b.split(",").map(Number)).filter((b) => b.length === 4 && b.every(Number.isFinite));
+const YS = (process.env.YS_BBOX || "31,117,41,127").split(",").map(Number); // Yellow Sea + Bohai: reserved share of the upload cap
 const MAX_MSGS = +(process.env.MAX_MSGS || 7500); // the Worker keeps at most 8000 messages per ingest
 const TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -69,7 +72,11 @@ async function doAis() {
       const ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
       const done = () => { try { ws.close(); } catch { /* ignore */ } resolve(); };
       const timer = setTimeout(done, Math.max(1000, until - Date.now()));
-      ws.onopen = () => { opened = true; ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: [[[BB[0], BB[1]], [BB[2], BB[3]]]], FilterMessageTypes: TYPES })); };
+      ws.onopen = () => {
+        opened = true;
+        const boxes = (BOXES.length ? BOXES : [BB]).map((b) => [[b[0], b[1]], [b[2], b[3]]]);
+        ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: boxes, FilterMessageTypes: TYPES }));
+      };
       ws.onmessage = async (e) => {
         let m; try { m = JSON.parse(typeof e.data === "string" ? e.data : e.data.text ? await e.data.text() : Buffer.from(e.data).toString()); } catch { return; }
         if (m.error) { log("aisstream error:", scrub(m.error)); return; }
@@ -85,21 +92,29 @@ async function doAis() {
   closed = closes.join(",");
   summary.ais = { opened, confirmed, msgs: total, close: closed };
   if (!buf.size) { log("aisstream: no messages (opened", opened, "confirmed", confirmed, "close", closed + ") - best effort, not fatal"); return; }
-  // Wide box = thousands of vessels per minute: keep the latest message per vessel+type (buf), Taiwan-core vessels first, positions before static data, capped at MAX_MSGS.
+  // Keep the latest message per vessel+type (buf). Prefer Taiwan-core, then Yellow Sea / Bohai, then the rest; reserve ~25% of the cap for Yellow Sea so a busy Japan/SCS stream cannot wipe it.
   const lat = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Latitude != null ? b.Latitude : m.MetaData && (m.MetaData.latitude != null ? m.MetaData.latitude : m.MetaData.Latitude); return typeof v === "number" ? v : null; };
   const lon = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Longitude != null ? b.Longitude : m.MetaData && (m.MetaData.longitude != null ? m.MetaData.longitude : m.MetaData.Longitude); return typeof v === "number" ? v : null; };
-  const pri = (m) => { const a = lat(m), o = lon(m), core = a != null && o != null && a >= CORE[0] && a <= CORE[2] && o >= CORE[1] && o <= CORE[3]; return (core ? 0 : 2) + (a == null ? 1 : 0); };
-  // Suspected CCG / PLAN vessels (same rules as proxy/src/ais.mjs, cheap version) are never thinned away, wherever they are in the wide box.
+  const inBox = (a, o, b) => a != null && o != null && a >= b[0] && a <= b[2] && o >= b[1] && o <= b[3];
+  const pri = (m) => { const a = lat(m), o = lon(m); if (inBox(a, o, CORE)) return 0; if (inBox(a, o, YS)) return 1; return 2 + (a == null ? 1 : 0); };
   const SUS_NAME = /HAI ?JING|CHINA ?COAST ?GUARD|CCG ?\d{3,5}|PLA ?NAVY|PLAN[ -]?\d{2,4}|海警|海軍|海军|解放軍|解放军/i;
   const susSet = new Set();
   for (const m of buf.values()) {
     const mm = String((m.MetaData && m.MetaData.MMSI) || ""), st = m.Message && m.Message.ShipStaticData, nm = (st && st.Name) || (m.MetaData && m.MetaData.ShipName) || "";
     if (/^413875/.test(mm) || SUS_NAME.test(nm) || (st && st.Type === 35 && /^41[23]/.test(mm))) susSet.add(mm);
   }
-  const pri0 = pri; const priS = (m) => (susSet.has(String((m.MetaData && m.MetaData.MMSI) || "")) ? -2 : 0) + pri0(m);
+  const priS = (m) => (susSet.has(String((m.MetaData && m.MetaData.MMSI) || "")) ? -2 : 0) + pri(m);
   let all = [...buf.values()]; const uniq = all.length;
-  if (all.length > MAX_MSGS) all = all.map((m) => [priS(m), m]).sort((x, y) => x[0] - y[0]).slice(0, MAX_MSGS).map((x) => x[1]);
+  if (all.length > MAX_MSGS) {
+    const ranked = all.map((m) => [priS(m), m]).sort((x, y) => x[0] - y[0]);
+    const ysNeed = Math.min(Math.floor(MAX_MSGS * 0.25), ranked.filter((x) => inBox(lat(x[1]), lon(x[1]), YS)).length);
+    const pick = new Set(ranked.filter((x) => inBox(lat(x[1]), lon(x[1]), YS)).slice(0, ysNeed).map((x) => x[1]));
+    for (const [, m] of ranked) { if (pick.size >= MAX_MSGS) break; pick.add(m); }
+    all = ranked.map((x) => x[1]).filter((m) => pick.has(m));
+  }
   summary.ais.uniqueMsgs = uniq; summary.ais.suspects = susSet.size; summary.ais.sent = all.length;
+  summary.ais.boxes = (BOXES.length ? BOXES : [BB]).length;
+  summary.ais.yellowSea = all.filter((m) => inBox(lat(m), lon(m), YS)).length;
   const j = await withRetry(() => post("/api/ships/ingest", { messages: all }));
   summary.ais.ingest = j; log("aisstream", total, "msgs ->", uniq, "unique ->", all.length, "sent ->", JSON.stringify(j));
 }

@@ -57,8 +57,10 @@ jobs:
           AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
           AIS_SEC: "300"              # ~300 vessels per 120 s over the wide box (2026-11-05): listen 5 min (collect-once reconnects on early 1006 drops)
-          BBOX: "0,105,45,145"        # aisstream box (lamin,lomin,lamax,lomax): South China Sea + Taiwan + W Pacific to 145E + Japan to 45N (was 18,108,34,132)
-          CORE_BBOX: "18,114,29,128"  # Taiwan core: its vessels are uploaded first when the 7500-message cap bites
+          BBOX: "0,105,45,145"        # fallback single box if AIS_BOXES unset
+          CORE_BBOX: "18,114,29,128"  # Taiwan core: preferred when the upload is capped
+          YS_BBOX: "31,117,41,127"    # Yellow Sea + Bohai: reserved ~25% of the upload cap
+          AIS_BOXES: "18,114,29,128;31,117,41,127;0,105,20,125;20,125,35,145;35,125,45,145"  # split boxes so Yellow Sea is not starved by one huge subscription
           MPB: "0"   # MPB is fetched by the placed Worker above (mpbais.motcmpb.gov.tw times out from GitHub runners)
         run: node scripts/collect-once.mjs
       - name: Health gate (ships present, MPB fresh, bindings intact)
