@@ -280,6 +280,7 @@
   function quakeHex(m) { return m >= 6 ? 0xff3b30 : m >= 5 ? 0xff6a00 : m >= 4 ? 0xffb000 : 0xffe14d; }
   function quakeCss(m) { return "#" + quakeHex(m).toString(16).padStart(6, "0"); }
   var NEWS = [
+    ["🖐 放大後拖曳更穩　", "手機放大地圖後，拖曳旋轉的速度會依縮放程度自動變慢、慣性滑動也縮短，不會一滑就跑太遠；縮小（預設廣域）時的手感維持不變。（2026-11-05）"],
     ["◆ 全海域標示共軍艦機　", "共軍／海警／共機的疑似標示（MMSI 413875、PLAN／海警名稱與舷號、412/413＋35 類、ICAO 0x7A1000–0x7A4FFF、軍用旗標與呼號）現在套用到整個 0–45°N、105–145°E 的 AIS 與 ADS-B 資料，不只台灣周邊。另外新增「◆ 官方通報位置（概略）」：把日本統合幕僚監部公布的共軍艦艇／軍機目擊位置（例如「宮古島の南東約210km」、沖宮、大隅海峡）換算成地圖上的大約位置與不確定圈，標明日期、來源、信心「確認」。工具列的 ◆ 可開關。提醒：軍艦軍機多半關閉 AIS／ADS-B，地圖只顯示偵測到或官方通報的位置，沒標示不代表沒有；官方通報位置是當時的概略位置，不是即時位置。（2026-11-04）"],
     ["🌏 範圍擴大到東亞　", "航班、船舶、地震的涵蓋範圍由台灣周邊擴大為 0–45°N、105–145°E：南到南海、東到西太平洋、北到日本。預設畫面改為「東亞廣域」，可用「台灣上空」回到台灣。船舶／航班在範圍外圍會自動精簡（台灣周邊優先）；航港局 MPB 與氣象署仍僅限台灣，推播也只針對台灣周邊（日本地震僅 M6.5 以上才通知）。（2026-11-04）"],
     ["⚡ 開啟速度優化　", "文字與統計先顯示、地球儀稍後載入：大圖貼圖改為先載入 70 KB 小圖、閒置時再換高解析 WebP，衛星資料延後載入，首屏需下載的資料由約 1.2 MB 降到約 0.3 MB。（2026-11-04）"],
@@ -1215,6 +1216,10 @@
             if (fk.kind === "point" && Math.abs(nd - tdist) < 0.01 && camera.position.clone().normalize().distanceTo(dir) < 0.004) focusRef.current = null;
           }
         }
+        // zoom-scaled drag: rotate speed ∝ altitude above surface (r=1); unchanged at ≥ default view (2.6), much slower when zoomed in
+        var zf = Math.max(0.03, Math.min(1, (camLen - 1) / 1.6));
+        controls.rotateSpeed = 0.6 * zf;
+        controls.dampingFactor = 0.08 + 0.17 * (1 - zf); // less inertia/overshoot when zoomed in
         controls.update();
 
         updateWarnTags(lay, camLen);
@@ -1602,7 +1607,7 @@
       { id: "pla", label: "PLA", sum: Data.state.intel.mnd.length ? String(Data.state.intel.mnd[0].aircraft == null ? "—" : Data.state.intel.mnd[0].aircraft) : Data.state.pla.latest ? String(Data.state.pla.latest.aircraft) : "—", body: plaBody },
       { id: "sats", label: "SATS", sum: String(over.length), body: satsBody },
       { id: "passes", label: "PASSES", sum: (function () { var n = passes.list.find(function (p) { return p.end > Date.now(); }); return n ? hm(n.start) : "—"; })(), body: passesBody },
-      { id: "news", label: "NEW", sum: "11/4", body: newsBody },
+      { id: "news", label: "NEW", sum: "11/5", body: newsBody },
       { id: "alerts", label: "ALERTS", sum: pushInfo && pushInfo.subscribed ? "ON" : "OFF", body: alertsBody },
     ];
     var curTab = TABS.find(function (t) { return t.id === tab; });
