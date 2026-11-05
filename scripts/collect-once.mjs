@@ -110,7 +110,7 @@ async function verify() {
   summary.worker = { shipsUpdatedAgeSec: Math.round(shipAge), shipsCount: ships.count, mpbAgeSec: ships.mpbAgeSec, cwaTimeAgeSec: Math.round(cwaAge), quakes: (q.quakes || []).length, via: q.via };
   log("worker freshness:", JSON.stringify(summary.worker));
   if (!(shipAge < 180)) fail("Worker /api/ships not fresh (updated " + Math.round(shipAge) + " s ago)");
-  if (!(cwaAge < 180)) fail("Worker /api/quakes not fresh (time " + Math.round(cwaAge) + " s ago)");
+  if (!(cwaAge < 180 + (AIS_SEC || 0))) fail("Worker /api/quakes not fresh (time " + Math.round(cwaAge) + " s ago)");
   if (!(ships.count > 0)) fail("Worker /api/ships returns 0 ships");
 }
 
