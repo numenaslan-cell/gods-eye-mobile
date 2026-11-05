@@ -63,36 +63,42 @@ async function doCwa() {
 }
 async function doAis() {
   if (!AIS_KEY || !(AIS_SEC > 0)) { log("aisstream skipped"); return; }
+  const boxes = (BOXES.length ? BOXES : [BB]);
   const buf = new Map(); let total = 0, opened = false, confirmed = false, closed = "";
-  // reconnect when aisstream drops the socket early (1006 before/after SubscriptionConfirmation), until AIS_SEC is used up; max 5 sessions
-  const until = Date.now() + AIS_SEC * 1000; let sessions = 0; const closes = [];
-  while (Date.now() < until - 5000 && sessions < 5) {
-    sessions++; closed = "";
-    await new Promise((resolve) => {
-      const ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
-      const done = () => { try { ws.close(); } catch { /* ignore */ } resolve(); };
-      const timer = setTimeout(done, Math.max(1000, until - Date.now()));
-      ws.onopen = () => {
-        opened = true;
-        const boxes = (BOXES.length ? BOXES : [BB]).map((b) => [[b[0], b[1]], [b[2], b[3]]]);
-        ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: boxes, FilterMessageTypes: TYPES }));
-      };
-      ws.onmessage = async (e) => {
-        let m; try { m = JSON.parse(typeof e.data === "string" ? e.data : e.data.text ? await e.data.text() : Buffer.from(e.data).toString()); } catch { return; }
-        if (m.error) { log("aisstream error:", scrub(m.error)); return; }
-        if (m.MessageType === "SubscriptionConfirmation") { confirmed = true; return; }
-        total++; const mm = m.MetaData && m.MetaData.MMSI; if (mm) buf.set(mm + ":" + m.MessageType, m);
-      };
-      ws.onclose = (e) => { closed = e.code + ""; clearTimeout(timer); resolve(); };
-      ws.onerror = () => {};
-    });
-    closes.push(closed || "timer");
-    if (Date.now() < until - 5000) { log("aisstream session", sessions, "ended early (close", closed + ") - reconnecting"); await new Promise((r) => setTimeout(r, 3000 * sessions)); }
+  const closes = [];
+  // Listen per box sequentially so Yellow Sea / Bohai are not drowned by Japan/SCS traffic in one huge multiplexed subscription.
+  const weights = boxes.map((b) => (b[0] === YS[0] && b[1] === YS[1] && b[2] === YS[2] && b[3] === YS[3] ? 2 : 1));
+  const wSum = weights.reduce((a, b) => a + b, 0) || 1;
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const box = boxes[bi], slice = Math.max(25, Math.floor(AIS_SEC * weights[bi] / wSum));
+    const until = Date.now() + slice * 1000; let sessions = 0;
+    log("aisstream box", bi + 1 + "/" + boxes.length, box.join(","), "for", slice + "s");
+    while (Date.now() < until - 2000 && sessions < 3) {
+      sessions++; closed = "";
+      await new Promise((resolve) => {
+        const ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
+        const done = () => { try { ws.close(); } catch { /* ignore */ } resolve(); };
+        const timer = setTimeout(done, Math.max(1000, until - Date.now()));
+        ws.onopen = () => {
+          opened = true;
+          ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: [[[box[0], box[1]], [box[2], box[3]]]], FilterMessageTypes: TYPES }));
+        };
+        ws.onmessage = async (e) => {
+          let m; try { m = JSON.parse(typeof e.data === "string" ? e.data : e.data.text ? await e.data.text() : Buffer.from(e.data).toString()); } catch { return; }
+          if (m.error) { log("aisstream error:", scrub(m.error)); return; }
+          if (m.MessageType === "SubscriptionConfirmation") { confirmed = true; return; }
+          total++; const mm = m.MetaData && m.MetaData.MMSI; if (mm) buf.set(mm + ":" + m.MessageType, m);
+        };
+        ws.onclose = (e) => { closed = e.code + ""; clearTimeout(timer); resolve(); };
+        ws.onerror = () => {};
+      });
+      closes.push((closed || "timer") + "@" + bi);
+      if (Date.now() < until - 2000) await new Promise((r) => setTimeout(r, 1500 * sessions));
+    }
   }
   closed = closes.join(",");
   summary.ais = { opened, confirmed, msgs: total, close: closed };
   if (!buf.size) { log("aisstream: no messages (opened", opened, "confirmed", confirmed, "close", closed + ") - best effort, not fatal"); return; }
-  // Keep the latest message per vessel+type (buf). Prefer Taiwan-core, then Yellow Sea / Bohai, then the rest; reserve ~25% of the cap for Yellow Sea so a busy Japan/SCS stream cannot wipe it.
   const lat = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Latitude != null ? b.Latitude : m.MetaData && (m.MetaData.latitude != null ? m.MetaData.latitude : m.MetaData.Latitude); return typeof v === "number" ? v : null; };
   const lon = (m) => { const b = m.Message && m.Message[m.MessageType]; const v = b && b.Longitude != null ? b.Longitude : m.MetaData && (m.MetaData.longitude != null ? m.MetaData.longitude : m.MetaData.Longitude); return typeof v === "number" ? v : null; };
   const inBox = (a, o, b) => a != null && o != null && a >= b[0] && a <= b[2] && o >= b[1] && o <= b[3];
@@ -113,11 +119,12 @@ async function doAis() {
     all = ranked.map((x) => x[1]).filter((m) => pick.has(m));
   }
   summary.ais.uniqueMsgs = uniq; summary.ais.suspects = susSet.size; summary.ais.sent = all.length;
-  summary.ais.boxes = (BOXES.length ? BOXES : [BB]).length;
+  summary.ais.boxes = boxes.length;
   summary.ais.yellowSea = all.filter((m) => inBox(lat(m), lon(m), YS)).length;
   const j = await withRetry(() => post("/api/ships/ingest", { messages: all }));
-  summary.ais.ingest = j; log("aisstream", total, "msgs ->", uniq, "unique ->", all.length, "sent ->", JSON.stringify(j));
+  summary.ais.ingest = j; log("aisstream", total, "msgs ->", uniq, "unique ->", all.length, "sent (ys=" + summary.ais.yellowSea + ", boxes=" + boxes.length + ") ->", JSON.stringify(j));
 }
+
 async function verify() {
   const t0 = Date.now(), get = async (p) => (await fetch(WORKER + p, { signal: AbortSignal.timeout(30000), headers: { "Cache-Control": "no-cache" } })).json();
   const ships = await get("/api/ships?_=" + t0), q = await get("/api/quakes?_=" + t0);

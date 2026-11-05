@@ -19,7 +19,7 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,7 +56,7 @@ jobs:
           CWA_API_KEY: ${{ secrets.CWA_API_KEY }}
           AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
-          AIS_SEC: "300"              # ~300 vessels per 120 s over the wide box (2026-11-05): listen 5 min (collect-once reconnects on early 1006 drops)
+          AIS_SEC: "360"              # ~60s per box (Yellow Sea weight 2 => ~120s); sequential per-box listen
           BBOX: "0,105,45,145"        # fallback single box if AIS_BOXES unset
           CORE_BBOX: "18,114,29,128"  # Taiwan core: preferred when the upload is capped
           YS_BBOX: "31,117,41,127"    # Yellow Sea + Bohai: reserved ~25% of the upload cap

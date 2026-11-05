@@ -76,7 +76,11 @@ export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
     out.push(o);
   }
   out.sort((a, b) => a._r - b._r || a.ageSec - b.ageSec);
-  const list = fairTake(out, cap, (o) => !inCore(o)); for (const o of list) delete o._r;
+  // Always surface suspected PLAN / CCG / Chinese research across the whole coverage area, even when the 2500 cap is full of Taiwan MPB traffic.
+  const must = out.filter((o) => o.ccg || o.plan || o.research);
+  const rest = out.filter((o) => !(o.ccg || o.plan || o.research));
+  const list = must.concat(fairTake(rest, Math.max(0, cap - must.length), (o) => !inCore(o)));
+  for (const o of list) delete o._r;
   list.total = out.length;
   return list;
 }
@@ -180,6 +184,7 @@ export function isPlan(s) {
   if (/(^|[^A-Z])HAI ?JUN([^A-Z]|$)/.test(name)) return s.type === 35 || (!s.type && /^41[234]/.test(mmsi));
   if (/海軍|海军|解放軍|解放军|中國人民解放軍|中国人民解放军/.test(raw)) return true;
   if (s.type === 30 || s.type === 36 || s.type === 37) return false;
+  if (/軍艦|军舰|驅逐|驱逐|護衛|护卫|護衛艦|护卫舰|驅逐艦|驱逐舰|兩棲|两栖/.test(raw) && /^41[234]/.test(mmsi)) return true;
   // AIS type 35 (military ops) under a Chinese MID — the main warship signal when the name is blank/encrypted
   return s.type === 35 && /^41[234]/.test(mmsi);
 }
