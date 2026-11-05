@@ -22,7 +22,7 @@
 import createPasses from "../../assets/passes.js";
 import satellite from "../../assets/vendor/satellite.min.js";
 import { encryptPayload, vapidAuthHeader, b64uDecode } from "./webpush.mjs";
-import { normalizeMpbCollection, applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES } from "./ais.mjs";
+import { normalizeMpbCollection, applyAis, applyMpb, trimShips, publicShips, isCcg, ccgWhy, AIS_BBOX, AIS_TYPES, keepFor } from "./ais.mjs";
 import { plaPublic, pruneJsEvents, sanitizeJsDetail, sanitizeMndDay } from "./intel.mjs";
 import { validateSubscription, selectQuakes } from "./logic.mjs";
 import { collectFlights, FLIGHT_BOX } from "./flights.mjs";
@@ -308,7 +308,7 @@ export class Hub {
     if (Array.isArray(body && body.messages)) { this.collectorAt = now; await this.ctx.storage.put("collectorAt", now); if (msgs.length) { this.aisAt = now; await this.ctx.storage.put("aisAt", now); } } // GitHub Actions collector heartbeat / aisstream freshness
     for (const x of msgs) if (applyAis(this.ships, x, now)) n++;
     for (const x of mpb) if (applyMpb(this.ships, x, now)) m++;
-    for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
+    for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > keepFor(this.ships[k], KEEP_MS)) delete this.ships[k];
     const dropped = trimShips(this.ships);
     await this.rememberCcg(now);
     this.lastCollect = now; this.lastError = ""; this.everCollected = true;
@@ -575,7 +575,7 @@ export class Hub {
       });
     } catch (e) { error = String((e && e.message) || e).slice(0, 160); }
     const now = Date.now();
-    for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > KEEP_MS) delete this.ships[k];
+    for (const k of Object.keys(this.ships)) if (!this.ships[k].t || now - this.ships[k].t > keepFor(this.ships[k], KEEP_MS)) delete this.ships[k];
     diag.ms = now - t0; this.diag = diag;
     if (!error && !diag.confirmed) error = "aisstream dropped the connection before confirming the subscription (" + (diag.close || "no close code") + ")";
     this.lastError = error; this.everCollected = true;

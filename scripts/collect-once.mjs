@@ -61,20 +61,28 @@ async function doCwa() {
 async function doAis() {
   if (!AIS_KEY || !(AIS_SEC > 0)) { log("aisstream skipped"); return; }
   const buf = new Map(); let total = 0, opened = false, confirmed = false, closed = "";
-  await new Promise((resolve) => {
-    const ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
-    const done = () => { try { ws.close(); } catch { /* ignore */ } resolve(); };
-    const timer = setTimeout(done, AIS_SEC * 1000);
-    ws.onopen = () => { opened = true; ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: [[[BB[0], BB[1]], [BB[2], BB[3]]]], FilterMessageTypes: TYPES })); };
-    ws.onmessage = async (e) => {
-      let m; try { m = JSON.parse(typeof e.data === "string" ? e.data : e.data.text ? await e.data.text() : Buffer.from(e.data).toString()); } catch { return; }
-      if (m.error) { log("aisstream error:", scrub(m.error)); return; }
-      if (m.MessageType === "SubscriptionConfirmation") { confirmed = true; return; }
-      total++; const mm = m.MetaData && m.MetaData.MMSI; if (mm) buf.set(mm + ":" + m.MessageType, m);
-    };
-    ws.onclose = (e) => { closed = e.code + ""; clearTimeout(timer); resolve(); };
-    ws.onerror = () => {};
-  });
+  // reconnect when aisstream drops the socket early (1006 before/after SubscriptionConfirmation), until AIS_SEC is used up; max 5 sessions
+  const until = Date.now() + AIS_SEC * 1000; let sessions = 0; const closes = [];
+  while (Date.now() < until - 5000 && sessions < 5) {
+    sessions++; closed = "";
+    await new Promise((resolve) => {
+      const ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
+      const done = () => { try { ws.close(); } catch { /* ignore */ } resolve(); };
+      const timer = setTimeout(done, Math.max(1000, until - Date.now()));
+      ws.onopen = () => { opened = true; ws.send(JSON.stringify({ APIKey: AIS_KEY, BoundingBoxes: [[[BB[0], BB[1]], [BB[2], BB[3]]]], FilterMessageTypes: TYPES })); };
+      ws.onmessage = async (e) => {
+        let m; try { m = JSON.parse(typeof e.data === "string" ? e.data : e.data.text ? await e.data.text() : Buffer.from(e.data).toString()); } catch { return; }
+        if (m.error) { log("aisstream error:", scrub(m.error)); return; }
+        if (m.MessageType === "SubscriptionConfirmation") { confirmed = true; return; }
+        total++; const mm = m.MetaData && m.MetaData.MMSI; if (mm) buf.set(mm + ":" + m.MessageType, m);
+      };
+      ws.onclose = (e) => { closed = e.code + ""; clearTimeout(timer); resolve(); };
+      ws.onerror = () => {};
+    });
+    closes.push(closed || "timer");
+    if (Date.now() < until - 5000) { log("aisstream session", sessions, "ended early (close", closed + ") - reconnecting"); await new Promise((r) => setTimeout(r, 3000 * sessions)); }
+  }
+  closed = closes.join(",");
   summary.ais = { opened, confirmed, msgs: total, close: closed };
   if (!buf.size) { log("aisstream: no messages (opened", opened, "confirmed", confirmed, "close", closed + ") - best effort, not fatal"); return; }
   // Wide box = thousands of vessels per minute: keep the latest message per vessel+type (buf), Taiwan-core vessels first, positions before static data, capped at MAX_MSGS.

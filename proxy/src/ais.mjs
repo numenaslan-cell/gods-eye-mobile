@@ -40,6 +40,17 @@ export function applyAis(map, msg, now) {
 
 export const MAX_SHIPS_PUBLIC = 2500; // the client draws one mesh per ship: cap the payload, keep the interesting vessels first
 export const MAX_SHIPS_STORED = 4000;
+export const FAR_SHARE = 0.4;            // share of each cap reserved for vessels outside the Taiwan core (MPB alone has ~8000 Taiwan ships and used to crowd out the region)
+export const AIS_KEEP_MS = 3 * 3600000;  // aisstream-only vessels: the GitHub collector runs every ~40-75 min, so keep them longer than MPB ones
+export const inCore = (s) => s.lat != null && s.lat >= CORE_BBOX.lamin && s.lat <= CORE_BBOX.lamax && s.lon >= CORE_BBOX.lomin && s.lon <= CORE_BBOX.lomax;
+export const keepFor = (s, keepMs) => (s.src === "ais" ? Math.max(keepMs, AIS_KEEP_MS) : keepMs);
+/** items sorted best-first; take `cap`, guaranteeing min(farCount, share·cap) slots to non-core items (CCG/PLAN rank 0 are always first). */
+export function fairTake(items, cap, isFar, share = FAR_SHARE) {
+  if (items.length <= cap) return items.slice();
+  const far = items.filter(isFar), q = Math.min(far.length, Math.floor(cap * share)), pick = new Set(far.slice(0, q));
+  for (const x of items) { if (pick.size >= cap) break; pick.add(x); }
+  return items.filter((x) => pick.has(x));
+}
 
 /** Lower = more interesting. CCG first, then commercial / special-purpose ships, then unknown, then fishing boats (moving before stationary). */
 export function shipRank(s) {
@@ -54,14 +65,14 @@ export function shipRank(s) {
 export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
   const out = [];
   for (const s of Object.values(map)) {
-    if (s.lat == null || !s.t || now - s.t > keepMs) continue;
+    if (s.lat == null || !s.t || now - s.t > keepFor(s, keepMs)) continue;
     const o = { mmsi: s.mmsi, name: s.name || null, lat: s.lat, lon: s.lon, sog: s.sog != null ? s.sog : null, cog: s.cog != null ? s.cog : null, hdg: s.hdg != null ? s.hdg : null, type: s.type || null, dest: s.dest || null, nav: s.nav != null ? s.nav : null, ageSec: Math.round((now - s.t) / 1000), ccg: isCcg(s), plan: isPlan(s), src: s.src || "ais", _r: shipRank(s) };
     const why = ccgWhy(s); if (why) { o.ccgBy = why; const hull = ccgHull(s.name); if (hull) { o.hull = hull; const b = decodeCcgHull(hull); if (b) { o.bureau = b.short; o.bureauKind = b.kind; } } }
     else if (isGov(s)) o.gov = true;
     out.push(o);
   }
   out.sort((a, b) => a._r - b._r || a.ageSec - b.ageSec);
-  const list = out.slice(0, cap); for (const o of list) delete o._r;
+  const list = fairTake(out, cap, (o) => !inCore(o)); for (const o of list) delete o._r;
   list.total = out.length;
   return list;
 }
@@ -70,7 +81,8 @@ export function publicShips(map, now, keepMs, cap = MAX_SHIPS_PUBLIC) {
 export function trimShips(map, max = MAX_SHIPS_STORED) {
   const keys = Object.keys(map); if (keys.length <= max) return 0;
   keys.sort((a, b) => shipRank(map[a]) - shipRank(map[b]) || (map[b].t || 0) - (map[a].t || 0));
-  for (const k of keys.slice(max)) delete map[k];
+  const keep = new Set(fairTake(keys, max, (k) => !inCore(map[k])));
+  for (const k of keys) if (!keep.has(k)) delete map[k];
   return keys.length - max;
 }
 
